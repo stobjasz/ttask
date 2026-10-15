@@ -92,6 +92,9 @@ fn draw_header(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
         ),
         Span::styled(format!(" ({})", tui.tasks.len()), tui.theme.dim),
     ];
+    if let Some(context) = &tui.context {
+        left.push(Span::styled(format!("  @{context}"), tui.theme.project));
+    }
     if !tui.filter.is_empty() {
         left.push(Span::styled(format!("  / {}", tui.filter), tui.theme.today));
     }
@@ -316,6 +319,13 @@ fn task_row(
             t.dim
         };
         meta.push(Span::styled(format!("{label:>9}"), style));
+    } else if task.someday {
+        meta.push(Span::styled(format!("{:>9}", "someday"), t.dim));
+    } else if let Some(wait) = task.wait_until.filter(|_| task.is_waiting(today)) {
+        meta.push(Span::styled(
+            format!("{:>9}", format!("wait {}", relative_label(wait, today))),
+            t.dim,
+        ));
     } else if !task.is_open() {
         if let Some(done) = task.completed_at {
             let date = ttask_core::date_of_ms(done, &tui.app.clock().time_zone());
@@ -367,10 +377,11 @@ fn draw_detail(f: &mut Frame<'_>, tui: &Tui, area: Rect, full: bool) {
         )),
         Line::from(Span::styled(
             format!(
-                "#{} · {} · priority {}",
+                "#{} · {} · priority {} · urgency {:.1}",
                 task.id,
                 task.status,
-                task.priority.name()
+                task.priority.name(),
+                task.urgency
             ),
             t.dim,
         )),
@@ -418,6 +429,17 @@ fn draw_detail(f: &mut Frame<'_>, tui: &Tui, area: Rect, full: bool) {
             t.base
         };
         lines.push(Line::from(vec![label("Due"), Span::styled(text, style)]));
+    }
+    if task.someday {
+        lines.push(Line::from(vec![
+            label("Waiting"),
+            Span::styled("someday", t.dim),
+        ]));
+    } else if let Some(wait) = task.wait_until {
+        lines.push(Line::from(vec![
+            label("Waiting"),
+            Span::raw(format!("until {wait} ({})", relative_label(wait, today))),
+        ]));
     }
     if let Some(sched) = task.scheduled_date {
         lines.push(Line::from(vec![

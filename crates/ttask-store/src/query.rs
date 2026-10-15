@@ -31,6 +31,8 @@ pub enum TaskSort {
     /// Most recently completed first (logbook).
     Completed,
     Title,
+    /// Most urgent first; the services layer computes urgency and re-sorts.
+    Urgency,
 }
 
 impl TaskSort {
@@ -47,6 +49,9 @@ impl TaskSort {
             TaskSort::Created => "t.created_at DESC, t.id DESC",
             TaskSort::Completed => "t.completed_at IS NULL, t.completed_at DESC, t.id DESC",
             TaskSort::Title => "t.title COLLATE NOCASE, t.id",
+            TaskSort::Urgency => {
+                "(t.status = 'open') DESC, t.due_date IS NULL, t.due_date, t.priority DESC, t.id"
+            }
         }
     }
 }
@@ -62,6 +67,7 @@ impl std::str::FromStr for TaskSort {
             "created" => TaskSort::Created,
             "completed" | "done" => TaskSort::Completed,
             "title" => TaskSort::Title,
+            "urgency" => TaskSort::Urgency,
             other => return Err(format!("unknown sort `{other}`")),
         })
     }
@@ -259,6 +265,18 @@ fn compile_pred(pred: &Pred, ctx: &QueryCtx, params: &mut Vec<Value>) -> String 
             bind(params, ctx.today.to_string())
         ),
         Pred::Id(id) => format!("t.id = {}", bind(params, *id)),
+        Pred::Wait(cmp, date) => format!(
+            "t.wait_until IS NOT NULL AND t.wait_until {} {}",
+            cmp.sql(),
+            bind(params, date.to_string())
+        ),
+        Pred::WaitNone => "t.wait_until IS NULL AND NOT t.someday".into(),
+        Pred::IsWaiting => format!(
+            "t.wait_until IS NOT NULL AND t.wait_until > {}",
+            bind(params, ctx.today.to_string())
+        ),
+        Pred::IsSomeday => "t.someday".into(),
+        Pred::WaitAny => "1".into(),
     }
 }
 

@@ -119,6 +119,8 @@ pub struct NewTask {
     pub recur_rule: Option<String>,
     pub recur_mode: Option<RecurMode>,
     pub recur_series: Option<String>,
+    pub wait_until: Option<Date>,
+    pub someday: bool,
     pub tags: Vec<String>,
 }
 
@@ -156,6 +158,10 @@ pub struct Task {
     pub recur_rule: Option<String>,
     pub recur_mode: Option<RecurMode>,
     pub recur_series: Option<String>,
+    /// Hidden from the usual views until this date.
+    pub wait_until: Option<Date>,
+    /// Parked indefinitely; only the Someday view shows it.
+    pub someday: bool,
     pub tags: Vec<String>,
     pub sort_order: f64,
     pub created_at: i64,
@@ -165,6 +171,10 @@ pub struct Task {
     pub checklist: Progress,
     /// Waiting on an open task (dependencies).
     pub blocked: bool,
+    /// An open task waits on this one.
+    pub blocking: bool,
+    /// Filled in by the services layer (see `urgency`); 0 when not computed.
+    pub urgency: f64,
 }
 
 impl Task {
@@ -174,6 +184,11 @@ impl Task {
 
     pub fn is_overdue(&self, today: Date) -> bool {
         self.is_open() && self.due_date.is_some_and(|d| d < today)
+    }
+
+    /// Hidden by a future `wait:` date.
+    pub fn is_waiting(&self, today: Date) -> bool {
+        self.wait_until.is_some_and(|d| d > today)
     }
 }
 

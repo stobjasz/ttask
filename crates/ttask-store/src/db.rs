@@ -13,6 +13,30 @@ impl Db<'_> {
     pub fn conn(&self) -> &Connection {
         self.conn
     }
+
+    /// A small stored setting (e.g. the active context).
+    pub fn meta(&self, key: &str) -> crate::Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// Sets or (with `None`) removes a stored setting.
+    pub fn set_meta(&self, key: &str, value: Option<&str>) -> crate::Result<()> {
+        match value {
+            Some(v) => self.conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [key, v],
+            )?,
+            None => self
+                .conn
+                .execute("DELETE FROM meta WHERE key = ?1", [key])?,
+        };
+        Ok(())
+    }
 }
 
 pub(crate) fn date_sql(date: Option<Date>) -> Option<String> {

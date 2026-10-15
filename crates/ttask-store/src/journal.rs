@@ -39,6 +39,10 @@ pub struct TaskSnapshot {
     pub updated_at: i64,
     pub completed_at: Option<i64>,
     pub deleted_at: Option<i64>,
+    #[serde(default)]
+    pub wait_until: Option<String>,
+    #[serde(default)]
+    pub someday: bool,
     pub tags: Vec<String>,
     pub checklist: Vec<SnapshotChecklistItem>,
     pub reminders: Vec<SnapshotReminder>,
@@ -109,7 +113,8 @@ impl Db<'_> {
             .query_row(
                 "SELECT id, uid, project_id, parent_id, title, notes, status, priority, due_date,
                         due_time, scheduled_date, estimate_min, recur_rule, recur_mode, recur_series,
-                        sort_order, created_at, updated_at, completed_at, deleted_at
+                        sort_order, created_at, updated_at, completed_at, deleted_at,
+                        wait_until, someday
                    FROM tasks WHERE id = ?1",
                 [id],
                 |r| {
@@ -134,6 +139,8 @@ impl Db<'_> {
                         updated_at: r.get(17)?,
                         completed_at: r.get(18)?,
                         deleted_at: r.get(19)?,
+                        wait_until: r.get(20)?,
+                        someday: r.get(21)?,
                         tags: Vec::new(),
                         checklist: Vec::new(),
                         reminders: Vec::new(),
@@ -213,7 +220,9 @@ impl Db<'_> {
             s.created_at,
             s.updated_at,
             s.completed_at,
-            s.deleted_at
+            s.deleted_at,
+            s.wait_until,
+            s.someday
         ];
         if exists {
             self.conn.execute(
@@ -221,7 +230,7 @@ impl Db<'_> {
                     status = ?7, priority = ?8, due_date = ?9, due_time = ?10, scheduled_date = ?11,
                     estimate_min = ?12, recur_rule = ?13, recur_mode = ?14, recur_series = ?15,
                     sort_order = ?16, created_at = ?17, updated_at = ?18, completed_at = ?19,
-                    deleted_at = ?20
+                    deleted_at = ?20, wait_until = ?21, someday = ?22
                  WHERE id = ?1",
                 values,
             )?;
@@ -229,9 +238,10 @@ impl Db<'_> {
             self.conn.execute(
                 "INSERT INTO tasks (id, uid, project_id, parent_id, title, notes, status, priority,
                     due_date, due_time, scheduled_date, estimate_min, recur_rule, recur_mode,
-                    recur_series, sort_order, created_at, updated_at, completed_at, deleted_at)
+                    recur_series, sort_order, created_at, updated_at, completed_at, deleted_at,
+                    wait_until, someday)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18, ?19, ?20)",
+                    ?17, ?18, ?19, ?20, ?21, ?22)",
                 values,
             )?;
         }

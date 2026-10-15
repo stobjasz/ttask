@@ -68,6 +68,13 @@ pub enum Pred {
     HasSubtasks,
     IsOverdue,
     Id(i64),
+    Wait(Cmp, Date),
+    WaitNone,
+    /// Include waiting and someday tasks.
+    WaitAny,
+    /// `wait:` date after today.
+    IsWaiting,
+    IsSomeday,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +98,25 @@ impl Expr {
             ),
             Expr::Not(e) => e.constrains_status(),
             Expr::And(es) | Expr::Or(es) => es.iter().any(Expr::constrains_status),
+        }
+    }
+
+    /// Whether any predicate mentions waiting or someday, so callers know
+    /// not to hide those tasks by default.
+    pub fn constrains_visibility(&self) -> bool {
+        match self {
+            Expr::All => false,
+            Expr::Pred(p) => matches!(
+                p,
+                Pred::Wait(..)
+                    | Pred::WaitNone
+                    | Pred::WaitAny
+                    | Pred::IsWaiting
+                    | Pred::IsSomeday
+                    | Pred::Id(_)
+            ),
+            Expr::Not(e) => e.constrains_visibility(),
+            Expr::And(es) | Expr::Or(es) => es.iter().any(Expr::constrains_visibility),
         }
     }
 
@@ -334,6 +360,12 @@ impl Parser {
                 "none" => Ok(Pred::SchedNone),
                 _ => self.date_cmp(value).map(|(c, d)| Pred::Sched(c, d)),
             },
+            "wait" => match lower.as_str() {
+                "none" => Ok(Pred::WaitNone),
+                "any" | "all" => Ok(Pred::WaitAny),
+                "someday" => Ok(Pred::IsSomeday),
+                _ => self.date_cmp(value).map(|(c, d)| Pred::Wait(c, d)),
+            },
             "created" => self.date_cmp(value).map(|(c, d)| Pred::Created(c, d)),
             "done" | "completed" => self.date_cmp(value).map(|(c, d)| Pred::Done(c, d)),
             "text" => Ok(Pred::Text(value.to_owned())),
@@ -348,10 +380,12 @@ impl Parser {
                 "blocked" => Ok(Pred::IsBlocked),
                 "subtask" => Ok(Pred::IsSubtask),
                 "overdue" => Ok(Pred::IsOverdue),
+                "waiting" => Ok(Pred::IsWaiting),
+                "someday" => Ok(Pred::IsSomeday),
                 "open" => Ok(Pred::Status(Status::Open)),
                 "done" => Ok(Pred::Status(Status::Done)),
                 _ => ferr(format!(
-                    "is: is recurring, blocked, subtask, overdue, open or done, not `{value}`"
+                    "is: is recurring, blocked, subtask, overdue, waiting, someday, open or done, not `{value}`"
                 )),
             },
             "id" => value
@@ -490,6 +524,18 @@ mod tests {
             pred(Pred::Done(Cmp::Ge, date(2026, 10, 8)))
         );
         assert_eq!(parse(""), Expr::All);
+    }
+
+    #[test]
+    fn waiting_terms() {
+        assert_eq!(parse("is:waiting"), pred(Pred::IsWaiting));
+        assert_eq!(parse("wait:someday"), pred(Pred::IsSomeday));
+        assert_eq!(
+            parse("wait:<=fri"),
+            pred(Pred::Wait(Cmp::Le, date(2026, 10, 16)))
+        );
+        assert!(parse("is:someday or +x").constrains_visibility());
+        assert!(!parse("+x").constrains_visibility());
     }
 
     #[test]

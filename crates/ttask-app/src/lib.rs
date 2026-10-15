@@ -11,8 +11,9 @@ mod views;
 use jiff::ToSpan;
 use jiff::civil::{Date, Time};
 use ttask_core::filter::{Expr, FilterError, Pred, parse_filter};
-use ttask_core::quickadd::{Change, DEFAULT_REMINDER_TIME, Mods, QuickAddError, parse_mods};
+use ttask_core::quickadd::{Change, DEFAULT_REMINDER_TIME, Mods, QuickAddError, Wait, parse_mods};
 use ttask_core::recur::{RecurError, RecurMode, RecurRule, next_due};
+use ttask_core::urgency::{UrgencyWeights, urgency};
 use ttask_core::{
     ChecklistItem, Clock, NewTask, Priority, Project, ProjectId, SavedFilter, Status, TagInfo,
     Task, TaskId, jiff,
@@ -70,14 +71,24 @@ pub struct Completion {
 pub struct App {
     store: Store,
     clock: Box<dyn Clock>,
+    urgency: UrgencyWeights,
 }
+
+/// The `meta` key holding the active context's saved-filter name.
+const CONTEXT_KEY: &str = "context";
 
 impl App {
     pub fn new(store: Store, clock: impl Clock + 'static) -> App {
         App {
             store,
             clock: Box::new(clock),
+            urgency: UrgencyWeights::default(),
         }
+    }
+
+    /// Replaces the urgency weights (`[urgency]` in the config).
+    pub fn set_urgency_weights(&mut self, weights: UrgencyWeights) {
+        self.urgency = weights;
     }
 
     pub fn store(&self) -> &Store {
@@ -115,37 +126,151 @@ impl App {
     // ---------------------------------------------------------------- reads
 
     pub fn task(&self, id: TaskId) -> Result<Task> {
-        Ok(self.store.db().task(id)?)
+        let task = self.store.db().task(id)?;
+        let active = self.store.db().running_timer()?.map(|e| e.task_id);
+        Ok(self.with_urgency(task, active))
     }
 
-    /// Tasks matching `query` (plus `extra`, ANDed). Without a status term
-    /// only open tasks are returned.
+    /// Tasks matching `query` (plus `extra`, ANDed) within the active
+    /// context. Without a status term only open tasks are returned; without
+    /// a `wait:`/`is:waiting`/`is:someday` term, waiting and someday tasks
+    /// are hidden.
     pub fn list(&self, query: &str, extra: &str, sort: TaskSort) -> Result<Vec<Task>> {
+        self.list_with(query, extra, sort, true)
+    }
+
+    /// [`App::list`], optionally ignoring the active context.
+    pub fn list_with(
+        &self,
+        query: &str,
+        extra: &str,
+        sort: TaskSort,
+        use_context: bool,
+    ) -> Result<Vec<Task>> {
+        let filter = self.effective_filter(query, extra, use_context)?;
+        let query = TaskQuery {
+            filter,
+            sort,
+            limit: None,
+        };
+        let tasks = self.store.db().query_tasks(&query, &self.ctx())?;
+        let active = self.store.db().running_timer()?.map(|e| e.task_id);
+        let mut tasks: Vec<Task> = tasks
+            .into_iter()
+            .map(|t| self.with_urgency(t, active))
+            .collect();
+        if sort == TaskSort::Urgency {
+            // Stable: equal urgency keeps the SQL order (due date, priority).
+            tasks.sort_by(|a, b| b.urgency.total_cmp(&a.urgency));
+        }
+        Ok(tasks)
+    }
+
+    fn effective_filter(&self, query: &str, extra: &str, use_context: bool) -> Result<Expr> {
         let today = self.today();
         let mut expr = parse_filter(query, today)?.and(parse_filter(extra, today)?);
         if !expr.constrains_status() {
             expr = expr.and(Expr::Pred(Pred::Status(Status::Open)));
         }
-        let query = TaskQuery {
-            filter: expr,
-            sort,
-            limit: None,
-        };
-        Ok(self.store.db().query_tasks(&query, &self.ctx())?)
+        if !expr.constrains_visibility() {
+            expr = expr
+                .and(Expr::Not(Box::new(Expr::Pred(Pred::IsWaiting))))
+                .and(Expr::Not(Box::new(Expr::Pred(Pred::IsSomeday))));
+        }
+        if use_context {
+            if let Some((_, context)) = self.active_context()? {
+                expr = expr.and(context);
+            }
+        }
+        Ok(expr)
+    }
+
+    fn with_urgency(&self, mut task: Task, active: Option<TaskId>) -> Task {
+        task.urgency = urgency(
+            &task,
+            self.today(),
+            self.now_ms(),
+            active == Some(task.id),
+            &self.urgency,
+        );
+        task
     }
 
     pub fn view_tasks(&self, view: &View, extra: &str) -> Result<Vec<Task>> {
         self.list(&view.query, extra, view.sort)
     }
 
-    /// Open-task count for a view (sidebar badges).
+    /// Task count for a view within the active context (sidebar badges).
     pub fn view_count(&self, view: &View) -> Result<u32> {
-        let today = self.today();
-        let mut expr = parse_filter(&view.query, today)?;
-        if !expr.constrains_status() {
-            expr = expr.and(Expr::Pred(Pred::Status(Status::Open)));
-        }
+        let expr = self.effective_filter(&view.query, "", true)?;
         Ok(self.store.db().count_tasks(&expr, &self.ctx())?)
+    }
+
+    // ------------------------------------------------------------- contexts
+
+    /// The active context: a saved filter applied to every list. A context
+    /// whose saved filter was deleted counts as none.
+    pub fn active_context(&self) -> Result<Option<(String, Expr)>> {
+        let db = self.store.db();
+        let Some(name) = db.meta(CONTEXT_KEY)? else {
+            return Ok(None);
+        };
+        let Some(filter) = db.saved_filters()?.into_iter().find(|f| f.name == name) else {
+            return Ok(None);
+        };
+        Ok(Some((
+            filter.name,
+            parse_filter(&filter.query, self.today())?,
+        )))
+    }
+
+    /// Activates the saved filter `name` as the context, or clears it.
+    pub fn set_context(&mut self, name: Option<&str>) -> Result<Option<String>> {
+        let name = match name {
+            None => None,
+            Some(wanted) => Some(
+                self.saved_filters()?
+                    .into_iter()
+                    .find(|f| f.name.eq_ignore_ascii_case(wanted))
+                    .map(|f| f.name)
+                    .ok_or_else(|| StoreError::NotFound(format!("saved filter `{wanted}`")))?,
+            ),
+        };
+        self.store
+            .write(|db| db.set_meta(CONTEXT_KEY, name.as_deref()))?;
+        Ok(name)
+    }
+
+    /// Saves `query` as a filter called `name` and makes it the context.
+    pub fn define_context(&mut self, name: &str, query: &str) -> Result<()> {
+        self.save_filter(name, query)?;
+        self.set_context(Some(name))?;
+        Ok(())
+    }
+
+    /// Project and tags a new task inherits from the context, when the
+    /// context is a plain `#project` and/or `+tag` combination.
+    fn context_defaults(&self) -> Result<(Option<Vec<String>>, Vec<String>)> {
+        let Some((_, expr)) = self.active_context()? else {
+            return Ok((None, Vec::new()));
+        };
+        let terms: Vec<&Expr> = match &expr {
+            Expr::And(items) => items.iter().collect(),
+            single => vec![single],
+        };
+        let mut project = None;
+        let mut tags = Vec::new();
+        for term in terms {
+            match term {
+                Expr::Pred(Pred::Project(path)) if project.is_none() => {
+                    project = Some(path.split('/').map(str::to_owned).collect());
+                }
+                Expr::Pred(Pred::Tag(tag)) => tags.push(tag.clone()),
+                // Anything else (or, not, dates…) cannot be turned into defaults.
+                _ => return Ok((None, Vec::new())),
+            }
+        }
+        Ok((project, tags))
     }
 
     pub fn search(&self, text: &str, include_closed: bool) -> Result<Vec<SearchHit>> {
@@ -169,7 +294,10 @@ impl App {
     }
 
     pub fn detail(&self, id: TaskId) -> Result<TaskDetail> {
-        TaskDetail::load(&self.store.db(), id, self.now_ms())
+        let mut detail = TaskDetail::load(&self.store.db(), id, self.now_ms())?;
+        let active = self.store.db().running_timer()?.map(|e| e.task_id);
+        detail.task = self.with_urgency(detail.task, active);
+        Ok(detail)
     }
 
     /// `(can_undo, can_redo)`.
@@ -200,6 +328,20 @@ impl App {
         let title = mods.title.clone().unwrap_or_default();
         if title.trim().is_empty() {
             return Err(AppError::EmptyTitle);
+        }
+        // Inside a context like `#work +office`, new tasks land there too.
+        let mut with_defaults;
+        let mut mods = mods;
+        if project.is_none() && parent.is_none() {
+            let (ctx_project, ctx_tags) = self.context_defaults()?;
+            if ctx_project.is_some() || !ctx_tags.is_empty() {
+                with_defaults = mods.clone();
+                if with_defaults.project.is_none() {
+                    with_defaults.project = ctx_project.map(Change::Set);
+                }
+                with_defaults.add_tags.extend(ctx_tags);
+                mods = &with_defaults;
+            }
         }
         let (today, tz, now) = (self.today(), self.clock.time_zone(), self.now_ms());
         self.batch(|tx| {
@@ -403,6 +545,7 @@ impl App {
             tx.track(id, EventKind::Updated, |db| {
                 let mut fields = TaskFields::from(&task);
                 fields.scheduled_date = shift(task.scheduled_date, task.due_date, next);
+                fields.wait_until = shift(task.wait_until, task.due_date, next);
                 fields.due_date = Some(next);
                 if let Some(advanced) = rule.advanced() {
                     fields.recur_rule = Some(advanced.to_rrule());
@@ -729,6 +872,8 @@ fn spawn_next(
         due_date: Some(next),
         due_time: task.due_time,
         scheduled_date: shift(task.scheduled_date, task.due_date, next),
+        wait_until: shift(task.wait_until, task.due_date, next),
+        someday: false,
         estimate_min: task.estimate_min,
         recur_rule: Some(next_rule.to_rrule()),
         recur_mode: Some(mode),
@@ -804,6 +949,21 @@ fn apply_mods(
         Some(Change::Clear) => {
             f.due_date = None;
             f.due_time = None;
+        }
+        None => {}
+    }
+    match &mods.wait {
+        Some(Change::Set(Wait::Until(date))) => {
+            f.wait_until = Some(*date);
+            f.someday = false;
+        }
+        Some(Change::Set(Wait::Someday)) => {
+            f.someday = true;
+            f.wait_until = None;
+        }
+        Some(Change::Clear) => {
+            f.wait_until = None;
+            f.someday = false;
         }
         None => {}
     }

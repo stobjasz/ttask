@@ -13,7 +13,7 @@ use super::{ImportBatch, ImportTask};
 use crate::views::arrange_tree;
 use crate::{App, AppError, Result};
 
-const CSV_COLUMNS: [&str; 18] = [
+const CSV_COLUMNS: [&str; 20] = [
     "id",
     "uid",
     "title",
@@ -31,6 +31,8 @@ const CSV_COLUMNS: [&str; 18] = [
     "created_at",
     "updated_at",
     "completed_at",
+    "wait_until",
+    "someday",
     "notes",
 ];
 
@@ -155,6 +157,8 @@ pub fn csv_export(app: &App) -> Result<String> {
             timestamp(t.created_at),
             timestamp(t.updated_at),
             t.completed_at.map(timestamp).unwrap_or_default(),
+            t.wait_until.map(|d| d.to_string()).unwrap_or_default(),
+            if t.someday { "1" } else { "" }.to_owned(),
             t.notes.clone(),
         ])
         .map_err(csv_err)?;
@@ -205,6 +209,8 @@ const CSV_ALIASES: &[(&str, &[&str])] = &[
         &["recurrule", "recurrence", "repeat", "rrule", "recur"],
     ),
     ("recur_mode", &["recurmode"]),
+    ("wait", &["waituntil", "wait"]),
+    ("someday", &["someday"]),
     ("parent", &["parentuid", "parent"]),
     ("created", &["createdat", "created", "createdtime"]),
     ("updated", &["updatedat", "updated", "modified"]),
@@ -298,6 +304,11 @@ pub fn csv_import(text: &str, mapping: &[(String, String)], today: Date) -> Resu
             ));
         }
         task.scheduled_date = flexible_date(get("scheduled"), today).map(|(d, _)| d);
+        task.wait_until = flexible_date(get("wait"), today).map(|(d, _)| d);
+        task.someday = matches!(
+            get("someday").to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "x"
+        );
         let recur = get("recur");
         if !recur.is_empty() {
             match parse_recurrence(recur) {
@@ -373,6 +384,11 @@ pub fn markdown_export(app: &App) -> Result<String> {
             if task.priority.value() > 0 {
                 meta.push(task.priority.name().to_owned());
             }
+            if task.someday {
+                meta.push("someday".to_owned());
+            } else if let Some(wait) = task.wait_until {
+                meta.push(format!("waiting until {wait}"));
+            }
             meta.extend(task.tags.iter().map(|t| format!("+{t}")));
             if task.status == Status::Cancelled {
                 meta.push("cancelled".into());
@@ -427,6 +443,11 @@ pub fn todotxt_export(app: &App) -> Result<String> {
         }
         if let Some(sched) = t.scheduled_date {
             parts.push(format!("t:{sched}"));
+        }
+        if t.someday {
+            parts.push("wait:someday".into());
+        } else if let Some(wait) = t.wait_until {
+            parts.push(format!("wait:{wait}"));
         }
         if let Some(rule) = &t.recur_rule {
             let mode = if t.recur_mode == Some(RecurMode::Completion) {
@@ -512,6 +533,14 @@ pub fn todotxt_import(text: &str, today: Date) -> Result<ImportBatch> {
                     }
                     "t" => {
                         task.scheduled_date = flexible_date(value, today).map(|(d, _)| d);
+                        continue;
+                    }
+                    "wait" if value == "someday" => {
+                        task.someday = true;
+                        continue;
+                    }
+                    "wait" => {
+                        task.wait_until = flexible_date(value, today).map(|(d, _)| d);
                         continue;
                     }
                     "rrule" | "rrule!" => {

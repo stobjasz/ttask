@@ -67,7 +67,7 @@ fn add_rejects_blank_title_and_bad_tokens() {
         Err(AppError::QuickAdd(_))
     ));
     assert!(
-        titles(&app, "status:all").is_empty(),
+        titles(&app, "status:all wait:any").is_empty(),
         "failed adds leave nothing"
     );
 }
@@ -188,21 +188,26 @@ fn undo_reverts_whole_batches() {
     let mut app = app(&dir);
     let task = app.add("Report every:week due:today", None, None).unwrap();
     app.complete(&[task.id]).unwrap();
-    assert_eq!(titles(&app, "status:all").len(), 2);
+    assert_eq!(titles(&app, "status:all wait:any").len(), 2);
 
     // One undo reverts both the completion and the spawned instance.
     let undone = app.undo().unwrap().unwrap();
     assert!(undone.kinds.contains(&"spawned".to_owned()));
-    let all = app.list("status:all", "", TaskSort::Smart).unwrap();
+    let all = app
+        .list("status:all wait:any", "", TaskSort::Smart)
+        .unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].status, Status::Open);
 
     app.redo().unwrap().unwrap();
-    assert_eq!(titles(&app, "status:all").len(), 2);
+    assert_eq!(titles(&app, "status:all wait:any").len(), 2);
 
     app.undo().unwrap();
     app.undo().unwrap();
-    assert!(titles(&app, "status:all").is_empty(), "creation undone too");
+    assert!(
+        titles(&app, "status:all wait:any").is_empty(),
+        "creation undone too"
+    );
     assert!(app.undo().unwrap().is_none());
 }
 
@@ -213,9 +218,9 @@ fn delete_takes_subtasks_and_undo_brings_them_back() {
     let parent = app.add("Parent", None, None).unwrap();
     app.add("Child", None, Some(parent.id)).unwrap();
     app.delete(&[parent.id]).unwrap();
-    assert!(titles(&app, "status:all").is_empty());
+    assert!(titles(&app, "status:all wait:any").is_empty());
     app.undo().unwrap();
-    assert_eq!(titles(&app, "status:all"), ["Parent", "Child"]);
+    assert_eq!(titles(&app, "status:all wait:any"), ["Parent", "Child"]);
 }
 
 #[test]
@@ -357,7 +362,7 @@ fn seed(app: &mut App) {
     app.checklist_add(parent.id, "passport").unwrap();
     let blocker = app.add("Renew passport #admin", None, None).unwrap();
     app.block(parent.id, blocker.id).unwrap();
-    let done = app.add("Old chore", None, None).unwrap();
+    let done = app.add("Old chore wait:+2d", None, None).unwrap();
     app.complete(&[done.id]).unwrap();
     app.set_notes(blocker.id, "bring photos\nand form").unwrap();
     app.save_filter("Fun", "+fun").unwrap();
@@ -398,7 +403,9 @@ fn json_round_trip_is_lossless_and_idempotent() {
         "matched on uid"
     );
     assert_eq!(
-        dst.list("status:all", "", TaskSort::Smart).unwrap().len(),
+        dst.list("status:all wait:any", "", TaskSort::Smart)
+            .unwrap()
+            .len(),
         4
     );
     let detail = dst
@@ -424,15 +431,15 @@ fn import_dry_run_and_undo() {
     assert!(report.dry_run);
     assert_eq!(report.tasks_created, 4);
     assert!(
-        titles(&dst, "status:all").is_empty(),
+        titles(&dst, "status:all wait:any").is_empty(),
         "dry run writes nothing"
     );
 
     dst.import(doc.into(), None, false).unwrap();
-    assert_eq!(titles(&dst, "status:all").len(), 4);
+    assert_eq!(titles(&dst, "status:all wait:any").len(), 4);
     dst.undo().unwrap();
     assert!(
-        titles(&dst, "status:all").is_empty(),
+        titles(&dst, "status:all wait:any").is_empty(),
         "import is one undo step"
     );
 }
@@ -495,4 +502,175 @@ fn import_into_default_project() {
     app.import(batch, Some("Imported"), false).unwrap();
     assert_eq!(titles(&app, "#Imported"), ["Loose task"]);
     assert_eq!(titles(&app, "#home"), ["Other"]);
+}
+
+#[test]
+fn urgency_orders_the_next_view() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.add("Plain chore", None, None).unwrap();
+    app.add("Overdue bill due:-10d", None, None).unwrap();
+    app.add("Flagged +next", None, None).unwrap();
+    let blocker = app.add("Get quote", None, None).unwrap();
+    let blocked = app.add("Sign contract !urgent", None, None).unwrap();
+    app.block(blocked.id, blocker.id).unwrap();
+    app.add("Later sched:+5d !urgent", None, None).unwrap();
+
+    let next: Vec<_> = app
+        .view_tasks(&View::next(), "")
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.title, t.urgency))
+        .collect();
+    let titles: Vec<&str> = next.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Flagged", "Overdue bill", "Get quote", "Plain chore"]
+    );
+    assert!(next.windows(2).all(|w| w[0].1 >= w[1].1), "{next:?}");
+    // Blocked and future-scheduled tasks stay out of Next.
+    assert!(!titles.contains(&"Sign contract"));
+    assert!(!titles.contains(&"Later"));
+    assert!(
+        app.task(blocker.id).unwrap().urgency >= 8.0,
+        "blocking adds urgency"
+    );
+}
+
+#[test]
+fn custom_urgency_weights() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let t = app.add("x !high", None, None).unwrap();
+    assert_eq!(app.task(t.id).unwrap().urgency, 6.0);
+    app.set_urgency_weights(ttask_core::urgency::UrgencyWeights {
+        priority_high: 1.0,
+        ..Default::default()
+    });
+    assert_eq!(app.task(t.id).unwrap().urgency, 1.0);
+}
+
+#[test]
+fn waiting_and_someday_are_hidden_until_due() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.add("Visible", None, None).unwrap();
+    let waiting = app.add("Follow up wait:+3d", None, None).unwrap();
+    let someday = app.add("Learn piano wait:someday", None, None).unwrap();
+    app.add("Waited enough wait:yesterday", None, None).unwrap();
+
+    assert_eq!(titles(&app, ""), ["Visible", "Waited enough"]);
+    let names = |v: View| -> Vec<String> {
+        app.view_tasks(&v, "")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect()
+    };
+    assert_eq!(names(View::waiting()), ["Follow up"]);
+    assert_eq!(names(View::someday()), ["Learn piano"]);
+    assert_eq!(titles(&app, "wait:any").len(), 4);
+
+    // Clearing brings them back; someday and a date exclude each other.
+    app.edit(&[someday.id], "wait:none").unwrap();
+    app.edit(&[waiting.id], "wait:someday").unwrap();
+    let w = app.task(waiting.id).unwrap();
+    assert!(w.someday && w.wait_until.is_none());
+    assert!(titles(&app, "").contains(&"Learn piano".to_owned()));
+}
+
+#[test]
+fn recurring_wait_moves_with_the_due_date() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let t = app
+        .add("Invoice every:month due:today wait:-2d", None, None)
+        .unwrap();
+    let next = app.complete(&[t.id]).unwrap().remove(0).next.unwrap();
+    assert_eq!(next.due_date, Some(date(2026, 11, 15)));
+    assert_eq!(next.wait_until, Some(date(2026, 11, 13)));
+}
+
+#[test]
+fn contexts_filter_lists_and_seed_new_tasks() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.add("Home task #home", None, None).unwrap();
+    app.add("Work task #work +office", None, None).unwrap();
+    app.define_context("work", "#work +office").unwrap();
+    assert_eq!(app.active_context().unwrap().unwrap().0, "work");
+    assert_eq!(titles(&app, ""), ["Work task"]);
+    assert_eq!(app.view_count(&View::all()).unwrap(), 1);
+    assert_eq!(
+        app.list_with("", "", TaskSort::Smart, false).unwrap().len(),
+        2,
+        "context can be bypassed"
+    );
+
+    // New tasks inherit the context's project and tags unless given.
+    let t = app.add("Prep slides", None, None).unwrap();
+    assert_eq!(t.project.as_deref(), Some("work"));
+    assert_eq!(t.tags, ["office"]);
+    let other = app.add("Groceries #home", None, None).unwrap();
+    assert_eq!(other.project.as_deref(), Some("home"));
+
+    // A context that is not a plain #project/+tag mix filters but seeds nothing.
+    app.define_context("urgent", "!urgent or due:<=today")
+        .unwrap();
+    let plain = app.add("Plain", None, None).unwrap();
+    assert_eq!(plain.project, None);
+
+    // Deleting the saved filter silently drops the context.
+    app.delete_filter("urgent").unwrap();
+    assert!(app.active_context().unwrap().is_none());
+    app.set_context(Some("WORK")).unwrap();
+    assert_eq!(app.active_context().unwrap().unwrap().0, "work");
+    app.set_context(None).unwrap();
+    assert!(app.active_context().unwrap().is_none());
+    assert!(app.set_context(Some("missing")).is_err());
+}
+
+#[test]
+fn taskwarrior_import_links_dependencies_and_is_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let export = r#"[
+{"uuid":"tw-1","description":"Get quote","status":"pending","entry":"20261001T090000Z","project":"Work.Acme","tags":["phone"]},
+{"uuid":"tw-2","description":"Sign contract","status":"pending","entry":"20261001T090000Z","depends":"tw-1","priority":"H"},
+{"uuid":"tw-3","description":"Old","status":"completed","entry":"20260901T090000Z","end":"20261002T090000Z"}
+]"#;
+    let tz = jiff::tz::TimeZone::UTC;
+    let report = app
+        .import(io::taskwarrior_import(export, &tz).unwrap(), None, false)
+        .unwrap();
+    assert_eq!(report.tasks_created, 3);
+    let contract = &app.list("Sign", "", TaskSort::Smart).unwrap()[0];
+    assert!(contract.blocked);
+    assert_eq!(contract.uid, "tw-2");
+    assert_eq!(titles(&app, "#work/acme +phone"), ["Get quote"]);
+    let again = app
+        .import(io::taskwarrior_import(export, &tz).unwrap(), None, false)
+        .unwrap();
+    assert_eq!((again.tasks_created, again.tasks_updated), (0, 3));
+}
+
+#[test]
+fn ics_export_lists_due_tasks_in_context() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.add(
+        "Dentist due:2026-11-03@10:00 remind:due-1h ~45m",
+        None,
+        None,
+    )
+    .unwrap();
+    app.add("No date", None, None).unwrap();
+    app.add("Parked due:+3d wait:someday", None, None).unwrap();
+    let tasks = app.ics_tasks("").unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].1.len(), 1, "one alarm");
+    let ics = io::ics_export(&tasks, app.now_ms(), &app.clock().time_zone());
+    assert!(ics.contains("SUMMARY:Dentist"));
+    assert!(ics.contains("DTSTART:20261103T100000Z"));
+    assert!(ics.contains("DTEND:20261103T104500Z"));
 }

@@ -52,6 +52,8 @@ pub enum Action {
     ToggleItem,
     Timer,
     SaveFilter,
+    Wait,
+    Context,
     Help,
     Quit,
     Back,
@@ -103,6 +105,8 @@ impl Action {
         ),
         (Action::Timer, "timer", "Start/stop timer"),
         (Action::SaveFilter, "save_filter", "Save filter"),
+        (Action::Wait, "wait", "Wait until / someday"),
+        (Action::Context, "context", "Switch context"),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
         (Action::Back, "back", "Back / clear filter"),
@@ -282,6 +286,8 @@ impl Keymap {
         bind(&["space"], Action::ToggleItem);
         bind(&["T"], Action::Timer);
         bind(&["S"], Action::SaveFilter);
+        bind(&["w"], Action::Wait);
+        bind(&["C"], Action::Context);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);

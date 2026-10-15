@@ -11,6 +11,8 @@ use crate::keymap::Action;
 pub enum Target {
     Action(Action),
     View(View),
+    /// Activate a saved filter as the context, or clear it with `None`.
+    Context(Option<String>),
 }
 
 #[derive(Debug, Clone)]

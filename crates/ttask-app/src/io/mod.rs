@@ -4,6 +4,8 @@
 //! duplicating.
 
 mod formats;
+mod ics;
+mod taskwarrior;
 
 use std::collections::HashMap;
 
@@ -19,6 +21,8 @@ pub use formats::{
     csv_export, csv_import, markdown_export, ticktick_import, todoist_import, todotxt_export,
     todotxt_import,
 };
+pub use ics::ics_export;
+pub use taskwarrior::taskwarrior_import;
 
 use crate::{App, AppError, Result};
 
@@ -79,6 +83,10 @@ pub struct ExportTask {
     pub recur_rule: Option<String>,
     pub recur_mode: Option<RecurMode>,
     pub recur_series: Option<String>,
+    #[serde(default)]
+    pub wait_until: Option<Date>,
+    #[serde(default)]
+    pub someday: bool,
     #[serde(default)]
     pub sort_order: f64,
     pub created_at: i64,
@@ -148,6 +156,8 @@ pub struct ImportTask {
     pub recur_rule: Option<String>,
     pub recur_mode: Option<RecurMode>,
     pub recur_series: Option<String>,
+    pub wait_until: Option<Date>,
+    pub someday: bool,
     pub sort_order: Option<f64>,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
@@ -191,6 +201,8 @@ impl From<ExportDoc> for ImportBatch {
                 recur_rule: t.recur_rule,
                 recur_mode: t.recur_mode,
                 recur_series: t.recur_series,
+                wait_until: t.wait_until,
+                someday: t.someday,
                 sort_order: Some(t.sort_order),
                 created_at: Some(t.created_at),
                 updated_at: Some(t.updated_at),
@@ -308,6 +320,8 @@ impl App {
                 recur_rule: task.recur_rule,
                 recur_mode: task.recur_mode,
                 recur_series: task.recur_series,
+                wait_until: task.wait_until,
+                someday: task.someday,
                 sort_order: task.sort_order,
                 created_at: task.created_at,
                 updated_at: task.updated_at,
@@ -372,6 +386,8 @@ impl App {
         };
         let result = self.batch(|tx| {
             let db = tx.db;
+            // Projects come from uids (JSON) and from paths (other formats).
+            let projects_before = db.projects(true)?.len();
             // Projects with uids, parents first.
             let mut project_ids: HashMap<String, ProjectId> = HashMap::new();
             let mut pending: Vec<&ProjectRecord> = batch.projects.iter().collect();
@@ -389,8 +405,7 @@ impl App {
                             }
                         },
                     };
-                    let (id, created) = db.upsert_project(p, parent)?;
-                    report.projects_created += usize::from(created);
+                    let (id, _created) = db.upsert_project(p, parent)?;
                     project_ids.insert(p.uid.clone(), id);
                 }
                 if rest.len() == before {
@@ -545,6 +560,7 @@ impl App {
                 db.save_filter(&filter.name, &filter.query)?;
                 report.filters += 1;
             }
+            report.projects_created = db.projects(true)?.len().saturating_sub(projects_before);
             if dry_run {
                 // Roll everything back but keep the report.
                 return Err(AppError::DryRun);
@@ -578,6 +594,8 @@ fn fill_snapshot(
     snap.recur_rule = item.recur_rule.clone();
     snap.recur_mode = item.recur_mode.map(|m| m.as_str().to_owned());
     snap.recur_series = item.recur_series.clone();
+    snap.wait_until = item.wait_until.map(|d| d.to_string());
+    snap.someday = item.someday;
     if let Some(order) = item.sort_order {
         snap.sort_order = order;
     }

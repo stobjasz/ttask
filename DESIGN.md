@@ -2,7 +2,7 @@
 
 2026-10-15 · Sebastian
 
-> Source of truth: <https://claude.ai/code/artifact/f6233bfd-b98c-4e88-aad4-8992eb6abb6d> (synced at rev 17; diagrams redrawn as Mermaid).
+> Source of truth: <https://claude.ai/code/artifact/f6233bfd-b98c-4e88-aad4-8992eb6abb6d> (synced at rev 18; diagrams redrawn as Mermaid).
 
 ## Overview
 
@@ -511,7 +511,7 @@ Recurrence and date tests pin the clock and time zone (injected `Clock` trait), 
 
 ## Implementation notes
 
-Status 2026-10-15: M0–M3 are implemented. Where the build differs from or sharpens the design above:
+Status 2026-10-15: M0–M3 and the first five M4 features are implemented. Where the build differs from or sharpens the design above:
 
 | Area | As built | Why |
 | --- | --- | --- |
@@ -528,6 +528,11 @@ Status 2026-10-15: M0–M3 are implemented. Where the build differs from or shar
 | Encrypted export | `export --encrypt` writes an age (scrypt passphrase) file; `import` decrypts it | `TTASK_EXPORT_PASSPHRASE` for scripts |
 | TUI extra keys | `X` cancel, `M` modify with tokens, `c` checklist item, `Space` mark/toggle item, `s` skip, `T` timer, `S` save filter, `D` delete | Covers every CLI action from the keyboard |
 | CLI arguments | `edit` accepts `-+tag` tokens, so its flags go before the changes; `ls` uses `not +tag` instead of `-+tag` | Keeps `--flags` usable after positional text |
+| Urgency | Taskwarrior's weighted sum plus an `urgent` priority weight (9.0); computed in the services layer, not stored | Always current (age, due, timer) without write amplification |
+| Contexts | A context is a saved filter, activated by name (stored in `meta`). It applies to lists, views, counts and ICS export, not to search or commands that take ids. New tasks inherit its project/tags only when it is a plain `#project` / `+tag` combination | Reuses the filter language; predictable "write context" |
+| Waiting / Someday | Two columns (`wait_until`, `someday`, migration 0003). Lists hide both unless the query mentions `wait:`/`is:waiting`/`is:someday`; `ls --all` adds `wait:any`. Recurring instances shift `wait:` with the due date | Keeps Today/Next focused without a new status |
+| Taskwarrior import | One open task per recurring series (the earliest pending instance, or the template); deleted tasks skipped; projects `A.B.C` → `A/B.C` | ttask models recurrence as a single open task |
+| Calendar export | VEVENTs (not VTODOs): all-day for dates, timed events last the estimate (30 min default); RRULE only for schedule-based recurrence | Most calendar apps ignore VTODO |
 
 ## Roadmap and decisions
 
@@ -546,6 +551,28 @@ flowchart LR
 ```
 
 Each phase closes only when its gate holds: M0 when the full test suite passes on plain and encrypted databases, M1 after a week of the author using ttask as their only task list, M2 when migration fixtures and the three-OS CI matrix are green.
+
+### Beyond 1.0: M4–M6
+
+Added 2026-10-15 from a review of Taskwarrior, dstask, todoman/CalDAV, Super Productivity and Things. Ranked by value for effort; everything keeps the local-first, encrypted design.
+
+| Milestone | Feature | Status |
+| --- | --- | --- |
+| **M4 Power features** | Urgency score + **Next** view (Taskwarrior-style weights, configurable under `[urgency]`) | Done |
+| M4 | **Contexts**: a saved filter applied to every list, seeding new tasks with its project/tags | Done |
+| M4 | **Waiting / Someday**: `wait:<date>` hides a task until then, `wait:someday` parks it; Waiting and Someday views | Done |
+| M4 | **Taskwarrior import** (`task export` JSON, idempotent on uuid) | Done |
+| M4 | **Calendar export**: `export --format ics` (events for due tasks, recurrence, alarms) | Done |
+| M4 | `ttask open` (launch URLs in a task), bulk actions by filter (`done --filter …`), `ttask count` for prompts/status bars, GitHub-issues import | Planned |
+| **M5 Workflow** | Reports (completed per week, time per project, overdue trend) | Planned |
+| M5 | Guided weekly review in the TUI (inbox, overdue, stale, someday, projects without a next action) | Planned |
+| M5 | Focus mode / Pomodoro on top of the timer | Planned |
+| M5 | Hooks: user scripts on add/modify/complete with JSON on stdin (opt-in; they see decrypted data) | Planned |
+| M5 | Templates (projects with subtasks and checklists), annotations, TUI agenda (week grid), mouse support, rendered Markdown notes | Planned |
+| **M6 Sync** | Multi-device sync. Preferred: an encrypted changeset log in a synced folder with per-field last-writer-wins on `uid`; alternatives: git-based (dstask style) or an opt-in one-way CalDAV/VTODO bridge for phones | Design needed |
+| M6 | Two-way issue-tracker sync (GitHub/GitLab/Jira) as an optional, separate command | Maybe |
+
+Out of scope: collaboration or sharing, a hosted service, gamification, AI features.
 
 **Decisions** (resolved 2026-10-15)
 

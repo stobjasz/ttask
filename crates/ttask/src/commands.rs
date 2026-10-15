@@ -60,7 +60,8 @@ impl Ctx {
         if store.mode() == DbMode::Encrypted {
             password::remember_if_configured(&chain, &self.config);
         }
-        let app = App::new(store, SystemClock::new());
+        let mut app = App::new(store, SystemClock::new());
+        app.set_urgency_weights(self.config.urgency.clone());
         let backups = &self.config.database.backups;
         if backups.daily > 0 || backups.weekly > 0 {
             let policy = BackupPolicy {
@@ -113,9 +114,11 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::List {
             query,
             all,
+            no_context,
             sort,
             limit,
-        } => list(&ctx, &query, all, sort, limit)?,
+        } => list(&ctx, &query, all, no_context, sort, limit)?,
+        Command::Context { args } => context(&ctx, &args)?,
         Command::Show { id, history } => show(&ctx, id, history)?,
         Command::Edit {
             id,
@@ -214,7 +217,8 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             format,
             output,
             encrypt,
-        } => export(&ctx, format, output, encrypt)?,
+            filter,
+        } => export(&ctx, format, output, encrypt, filter)?,
         Command::Db { action } => return db_cmd(&ctx, action),
         Command::Gc => gc(&ctx)?,
         Command::Lock => match keychain::delete(&ctx.db) {
@@ -311,6 +315,7 @@ fn list(
     ctx: &Ctx,
     query: &[String],
     all: bool,
+    no_context: bool,
     sort: Option<String>,
     limit: Option<usize>,
 ) -> anyhow::Result<()> {
@@ -333,21 +338,81 @@ fn list(
     if let Some(sort) = sort {
         sort_order = sort.parse().map_err(|e: String| anyhow!(e))?;
     }
-    let extra = if all { "status:all" } else { "" };
-    let mut tasks = app.list(&query, extra, sort_order)?;
+    let extra = if all { "status:all wait:any" } else { "" };
+    let mut tasks = app.list_with(&query, extra, sort_order, !no_context)?;
     if let Some(limit) = limit {
         tasks.truncate(limit);
     }
     if ctx.json {
         return ctx.print_json(&tasks);
     }
+    let context = (!no_context)
+        .then(|| app.active_context())
+        .transpose()?
+        .flatten()
+        .map(|(name, _)| name);
     if tasks.is_empty() {
-        ctx.say(if all { "No tasks." } else { "No open tasks." });
+        let mut msg = if all { "No tasks." } else { "No open tasks." }.to_owned();
+        if let Some(name) = &context {
+            msg.push_str(&format!(
+                " (context `{name}`; --no-context shows everything)"
+            ));
+        }
+        ctx.say(msg);
         return Ok(());
     }
     let today = app.today();
+    let show_urgency = sort_order == TaskSort::Urgency;
     for (task, depth) in arrange_tree(tasks) {
-        println!("{}", task_line(&task, depth, today, &ctx.painter));
+        let mut line = task_line(&task, depth, today, &ctx.painter);
+        if show_urgency {
+            line.push_str(
+                &ctx.painter
+                    .paint(Tone::Dim, &format!("  u{:.1}", task.urgency)),
+            );
+        }
+        println!("{line}");
+    }
+    if let Some(name) = context {
+        eprintln!(
+            "{}",
+            ctx.painter.paint(Tone::Dim, &format!("context: {name}"))
+        );
+    }
+    Ok(())
+}
+
+fn context(ctx: &Ctx, args: &[String]) -> anyhow::Result<()> {
+    let mut app = ctx.open()?;
+    match args {
+        [] => match app.active_context()? {
+            Some((name, _)) => {
+                let query = app
+                    .saved_filters()?
+                    .into_iter()
+                    .find(|f| f.name == name)
+                    .map(|f| f.query)
+                    .unwrap_or_default();
+                ctx.say(format!("{name}  {}", ctx.painter.paint(Tone::Dim, &query)));
+            }
+            None => ctx.say("No context"),
+        },
+        [none] if none.eq_ignore_ascii_case("none") => {
+            app.set_context(None)?;
+            ctx.say("Context cleared");
+        }
+        [define, name, query @ ..] if define == "define" => {
+            if query.is_empty() {
+                bail!("usage: ttask context define <name> <query>");
+            }
+            app.define_context(name, &query.join(" "))?;
+            ctx.say(format!("Context: {name}"));
+        }
+        [name] => {
+            let name = app.set_context(Some(name))?.unwrap_or_default();
+            ctx.say(format!("Context: {name}"));
+        }
+        _ => bail!("usage: ttask context [NAME | none | define NAME QUERY]"),
     }
     Ok(())
 }
@@ -388,6 +453,14 @@ fn show(ctx: &Ctx, id: TaskId, with_history: bool) -> anyhow::Result<()> {
         row("tags", p.paint(Tone::Magenta, &tags.join(" ")));
     }
     row("priority", t.priority.name().to_owned());
+    if t.is_open() {
+        row("urgency", format!("{:.1}", t.urgency));
+    }
+    if t.someday {
+        row("waiting", "someday".to_owned());
+    } else if let Some(wait) = t.wait_until {
+        row("waiting", format!("until {wait}"));
+    }
     if let Some(due) = output::due_label(t, today) {
         let full = format!(
             "{} ({due})",
@@ -877,6 +950,7 @@ fn import(
             io::todoist_import(text, default.as_deref(), today)?
         }
         ImportFormat::Ticktick => io::ticktick_import(text, today)?,
+        ImportFormat::Taskwarrior => io::taskwarrior_import(text, &app.clock().time_zone())?,
     };
     let default_project = if matches!(format, ImportFormat::Todoist) {
         None
@@ -913,15 +987,28 @@ fn guess_format(file: &Path, text: &str) -> ImportFormat {
         .unwrap_or_default();
     let first_line = text.lines().next().unwrap_or("").to_ascii_uppercase();
     match ext.as_str() {
+        "json" if is_taskwarrior(text) => ImportFormat::Taskwarrior,
         "json" => ImportFormat::Json,
         "csv" if first_line.starts_with("TYPE,CONTENT") => ImportFormat::Todoist,
         "csv" if text.contains("\"List Name\"") || text.contains("List Name,") => {
             ImportFormat::Ticktick
         }
         "csv" => ImportFormat::Csv,
+        _ if is_taskwarrior(text) => ImportFormat::Taskwarrior,
         _ if text.trim_start().starts_with('{') => ImportFormat::Json,
         _ => ImportFormat::Todotxt,
     }
+}
+
+/// `task export` output: a JSON array (or lines) of objects with `uuid`
+/// and `description`, unlike ttask's own `{"format": "ttask", …}`.
+fn is_taskwarrior(text: &str) -> bool {
+    let head: String = text.chars().take(4096).collect();
+    let start = head.trim_start();
+    (start.starts_with('[') || start.starts_with("{\""))
+        && head.contains("\"uuid\"")
+        && head.contains("\"description\"")
+        && !head.contains("\"format\"")
 }
 
 fn export(
@@ -929,9 +1016,17 @@ fn export(
     format: ExportFormat,
     output: Option<PathBuf>,
     encrypt: bool,
+    filter: Option<String>,
 ) -> anyhow::Result<()> {
     let app = ctx.open()?;
+    if filter.is_some() && format != ExportFormat::Ics {
+        bail!("--filter applies to --format ics; the other formats export everything");
+    }
     let text = match format {
+        ExportFormat::Ics => {
+            let tasks = app.ics_tasks(filter.as_deref().unwrap_or(""))?;
+            io::ics_export(&tasks, app.now_ms(), &app.clock().time_zone())
+        }
         ExportFormat::Json => serde_json::to_string_pretty(&app.export()?)?,
         ExportFormat::Csv => io::csv_export(&app)?,
         ExportFormat::Markdown => io::markdown_export(&app)?,

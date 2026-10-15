@@ -684,3 +684,162 @@ fn tui_refuses_without_a_terminal() {
         .code(1)
         .stderr(predicate::str::contains("needs a terminal"));
 }
+
+fn ls_titles(env: &Env, args: &[&str]) -> Vec<String> {
+    let mut full = vec!["--json", "ls"];
+    full.extend_from_slice(args);
+    let out = env.cmd().args(&full).assert().success();
+    json(&out.get_output().stdout)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn next_view_sorts_by_urgency() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Plain");
+    add_json(&env, "Overdue due:-10d");
+    add_json(&env, "Flagged +next");
+    assert_eq!(ls_titles(&env, &["next"]), ["Flagged", "Overdue", "Plain"]);
+    env.cmd()
+        .args(["ls", "--sort", "urgency"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("u15.8"));
+    env.cmd()
+        .args(["show", "3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("urgency"));
+}
+
+#[test]
+fn urgency_weights_from_config() {
+    let env = Env::new();
+    fs::write(
+        env.dir.path().join("config.toml"),
+        "[urgency]\nnext = 0.0\ndue = 30.0\n",
+    )
+    .unwrap();
+    init_plain(&env);
+    add_json(&env, "Flagged +next");
+    add_json(&env, "Overdue due:-10d");
+    assert_eq!(ls_titles(&env, &["next"]), ["Overdue", "Flagged"]);
+}
+
+#[test]
+fn wait_and_someday_from_the_command_line() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Visible");
+    add_json(&env, "Follow up wait:+3d");
+    add_json(&env, "Learn piano wait:someday");
+    assert_eq!(ls_titles(&env, &[]), ["Visible"]);
+    assert_eq!(ls_titles(&env, &["waiting"]), ["Follow up"]);
+    assert_eq!(ls_titles(&env, &["someday"]), ["Learn piano"]);
+    assert_eq!(ls_titles(&env, &["--all"]).len(), 3);
+    env.cmd()
+        .args(["ls", "is:waiting"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wait "));
+    env.cmd()
+        .args(["edit", "3", "wait:none"])
+        .assert()
+        .success();
+    assert_eq!(ls_titles(&env, &[]).len(), 2);
+}
+
+#[test]
+fn contexts_from_the_command_line() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Home task #home");
+    add_json(&env, "Work task #work");
+    env.cmd()
+        .arg("context")
+        .assert()
+        .success()
+        .stdout("No context\n");
+    env.cmd()
+        .args(["context", "define", "work", "#work"])
+        .assert()
+        .success()
+        .stdout("Context: work\n");
+    assert_eq!(ls_titles(&env, &[]), ["Work task"]);
+    assert_eq!(ls_titles(&env, &["--no-context"]).len(), 2);
+    let added = add_json(&env, "Inherits");
+    assert_eq!(added["project"], "work");
+    env.cmd()
+        .arg("context")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("work  #work"));
+    env.cmd().args(["context", "none"]).assert().success();
+    assert_eq!(ls_titles(&env, &[]).len(), 3);
+    env.cmd().args(["context", "nope"]).assert().code(2);
+}
+
+#[test]
+fn ics_export_with_filter() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Dentist #health due:2026-11-03@10:00 remind:due-1h");
+    add_json(&env, "Pay rent #home due:2026-11-01 every:month");
+    add_json(&env, "No date #home");
+    let path = env.dir.path().join("tasks.ics");
+    env.cmd()
+        .args(["export", "--format", "ics", "--output"])
+        .arg(&path)
+        .assert()
+        .success();
+    let ics = fs::read_to_string(&path).unwrap();
+    assert!(ics.starts_with("BEGIN:VCALENDAR\r\n"));
+    assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
+    assert!(ics.contains("RRULE:FREQ=MONTHLY"));
+    assert!(ics.contains("BEGIN:VALARM"));
+    let out = env
+        .cmd()
+        .args(["export", "--format", "ics", "--filter", "#home"])
+        .assert()
+        .success();
+    let filtered = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert_eq!(filtered.matches("BEGIN:VEVENT").count(), 1);
+    assert!(filtered.contains("SUMMARY:Pay rent"));
+    env.cmd()
+        .args(["export", "--format", "csv", "--filter", "#home"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn taskwarrior_export_is_detected_and_imported() {
+    let env = Env::new();
+    init_plain(&env);
+    let path = env.dir.path().join("tw.json");
+    fs::write(
+        &path,
+        r#"[{"uuid":"a1","description":"From taskwarrior","status":"pending","project":"Work.Acme","tags":["next"],"priority":"H","entry":"20261001T090000Z","due":"20261020T000000Z"},
+{"uuid":"a2","description":"Deleted","status":"deleted","entry":"20261001T090000Z"}]"#,
+    )
+    .unwrap();
+    env.cmd()
+        .arg("import")
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Imported: 1 new, 0 updated task(s), 2 new project(s)",
+        ))
+        .stderr(predicate::str::contains("1 deleted"));
+    let out = env.cmd().args(["--json", "ls"]).assert().success();
+    let tasks = json(&out.get_output().stdout);
+    assert_eq!(tasks[0]["title"], "From taskwarrior");
+    assert_eq!(tasks[0]["project"], "Work/Acme");
+    assert_eq!(tasks[0]["uid"], "a1");
+    assert_eq!(tasks[0]["priority"], 2);
+}

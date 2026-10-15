@@ -346,3 +346,73 @@ fn ascii_theme_uses_ascii_glyphs() {
     assert!(screen.contains("( )"));
     assert!(screen.contains("Plain ~"));
 }
+
+#[test]
+fn wait_key_parks_tasks_and_waiting_view_shows_them() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Follow up due:today");
+    add(&mut tui, "Keep due:today");
+    press(&mut tui, "g");
+    press(&mut tui, "w");
+    press(&mut tui, "fri");
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(titles(&tui), ["Keep"]);
+    tui.open_view(ttask_app::View::waiting());
+    assert_eq!(titles(&tui), ["Follow up"]);
+    let screen = render_to_string(&mut tui, 120, 20);
+    assert!(screen.contains("Waiting    until 2026-10-16"), "{screen}");
+
+    press(&mut tui, "w");
+    ctrl(&mut tui, 'u');
+    press(&mut tui, "someday");
+    key(&mut tui, KeyCode::Enter);
+    tui.open_view(ttask_app::View::someday());
+    assert_eq!(titles(&tui), ["Follow up"]);
+    press(&mut tui, "w");
+    ctrl(&mut tui, 'u');
+    key(&mut tui, KeyCode::Enter);
+    tui.open_view(ttask_app::View::today());
+    assert_eq!(titles(&tui).len(), 2, "empty wait brings it back");
+}
+
+#[test]
+fn context_prompt_with_completion_and_palette() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Home thing due:today #home");
+    add(&mut tui, "Work thing due:today #work");
+    tui.app.save_filter("work", "#work").unwrap();
+    tui.reload();
+
+    press(&mut tui, "C");
+    press(&mut tui, "wo");
+    key(&mut tui, KeyCode::Tab);
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(tui.context.as_deref(), Some("work"));
+    assert_eq!(titles(&tui), ["Work thing"]);
+    let screen = render_to_string(&mut tui, 120, 20);
+    assert!(screen.contains("@work"), "{screen}");
+
+    // New tasks land in the context's project.
+    add(&mut tui, "Another due:today");
+    assert_eq!(titles(&tui).len(), 2);
+
+    press(&mut tui, ":");
+    press(&mut tui, "context none");
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(tui.context, None);
+    assert_eq!(titles(&tui).len(), 3);
+}
+
+#[test]
+fn next_view_and_urgency_in_detail() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Low");
+    add(&mut tui, "Important !urgent +next");
+    tui.open_view(ttask_app::View::next());
+    assert_eq!(titles(&tui), ["Important", "Low"]);
+    let screen = render_to_string(&mut tui, 130, 20);
+    assert!(screen.contains("urgency 24.8"), "{screen}");
+}

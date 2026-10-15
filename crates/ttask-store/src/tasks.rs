@@ -12,7 +12,7 @@ pub(crate) const TASK_SELECT: &str = "SELECT t.id, t.uid, t.parent_id, t.project
        CASE WHEN pp.id IS NULL THEN p.name ELSE pp.name || '/' || p.name END AS project_path,
        t.title, t.notes, t.status, t.priority, t.due_date, t.due_time, t.scheduled_date,
        t.estimate_min, t.recur_rule, t.recur_mode, t.recur_series, t.sort_order,
-       t.created_at, t.updated_at, t.completed_at,
+       t.created_at, t.updated_at, t.completed_at, t.wait_until, t.someday,
        (SELECT group_concat(g.name, char(31)) FROM task_tags tt JOIN tags g ON g.id = tt.tag_id
          WHERE tt.task_id = t.id) AS tags,
        (SELECT count(*) FROM tasks c WHERE c.parent_id = t.id AND c.deleted_at IS NULL) AS sub_total,
@@ -21,7 +21,9 @@ pub(crate) const TASK_SELECT: &str = "SELECT t.id, t.uid, t.parent_id, t.project
        (SELECT count(*) FROM checklist_items ci WHERE ci.task_id = t.id) AS cl_total,
        (SELECT count(*) FROM checklist_items ci WHERE ci.task_id = t.id AND ci.checked) AS cl_done,
        EXISTS (SELECT 1 FROM task_deps d JOIN tasks b ON b.id = d.blocker_id
-         WHERE d.blocked_id = t.id AND b.status = 'open' AND b.deleted_at IS NULL) AS blocked
+         WHERE d.blocked_id = t.id AND b.status = 'open' AND b.deleted_at IS NULL) AS blocked,
+       EXISTS (SELECT 1 FROM task_deps d JOIN tasks w ON w.id = d.blocked_id
+         WHERE d.blocker_id = t.id AND w.status = 'open' AND w.deleted_at IS NULL) AS blocking
   FROM tasks t
   LEFT JOIN projects p ON p.id = t.project_id
   LEFT JOIN projects pp ON pp.id = p.parent_id";
@@ -43,6 +45,8 @@ pub struct TaskFields {
     pub recur_rule: Option<String>,
     pub recur_mode: Option<RecurMode>,
     pub recur_series: Option<String>,
+    pub wait_until: Option<Date>,
+    pub someday: bool,
     pub sort_order: f64,
     pub completed_at: Option<i64>,
     pub tags: Vec<String>,
@@ -64,6 +68,8 @@ impl From<&Task> for TaskFields {
             recur_rule: t.recur_rule.clone(),
             recur_mode: t.recur_mode,
             recur_series: t.recur_series.clone(),
+            wait_until: t.wait_until,
+            someday: t.someday,
             sort_order: t.sort_order,
             completed_at: t.completed_at,
             tags: t.tags.clone(),
@@ -92,8 +98,8 @@ impl Db<'_> {
         self.conn.execute(
             "INSERT INTO tasks (uid, project_id, parent_id, title, notes, priority, due_date,
                 due_time, scheduled_date, estimate_min, recur_rule, recur_mode, recur_series,
-                sort_order, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+                sort_order, created_at, updated_at, wait_until, someday)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17)",
             params![
                 uid,
                 new.project_id,
@@ -109,7 +115,9 @@ impl Db<'_> {
                 new.recur_mode.map(RecurMode::as_str),
                 new.recur_series,
                 sort_order,
-                now_ms
+                now_ms,
+                date_sql(new.wait_until),
+                new.someday
             ],
         )?;
         let id = self.conn.last_insert_rowid();
@@ -165,7 +173,8 @@ impl Db<'_> {
             "UPDATE tasks SET title = ?2, notes = ?3, status = ?4, priority = ?5, project_id = ?6,
                 parent_id = ?7, due_date = ?8, due_time = ?9, scheduled_date = ?10,
                 estimate_min = ?11, recur_rule = ?12, recur_mode = ?13, recur_series = ?14,
-                sort_order = ?15, completed_at = ?16, updated_at = ?17
+                sort_order = ?15, completed_at = ?16, updated_at = ?17, wait_until = ?18,
+                someday = ?19
              WHERE id = ?1 AND deleted_at IS NULL",
             params![
                 id,
@@ -184,7 +193,9 @@ impl Db<'_> {
                 f.recur_series,
                 f.sort_order,
                 f.completed_at,
-                now_ms
+                now_ms,
+                date_sql(f.wait_until),
+                f.someday
             ],
         )?;
         if changed == 0 {
@@ -296,6 +307,8 @@ pub(crate) fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
         recur_rule: row.get("recur_rule")?,
         recur_mode,
         recur_series: row.get("recur_series")?,
+        wait_until: parse_date_col(row.get("wait_until")?, 20)?,
+        someday: row.get("someday")?,
         tags,
         sort_order: row.get("sort_order")?,
         created_at: row.get("created_at")?,
@@ -310,5 +323,7 @@ pub(crate) fn task_from_row(row: &Row<'_>) -> rusqlite::Result<Task> {
             total: row.get("cl_total")?,
         },
         blocked: row.get("blocked")?,
+        blocking: row.get("blocking")?,
+        urgency: 0.0,
     })
 }

@@ -45,6 +45,14 @@ impl<T> Change<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// Hidden until this date.
+    Until(Date),
+    /// Parked indefinitely.
+    Someday,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReminderSpec {
     /// Minutes before the due date/time (`remind:due-1h`, `remind:due`).
     BeforeDue(u32),
@@ -94,6 +102,7 @@ pub struct Mods {
     pub priority: Option<Priority>,
     pub due: Option<Change<DateSpec>>,
     pub sched: Option<Change<Date>>,
+    pub wait: Option<Change<Wait>>,
     pub estimate: Option<Change<u32>>,
     pub recur: Option<Change<(RecurRule, RecurMode)>>,
     pub reminders: Vec<ReminderSpec>,
@@ -215,6 +224,19 @@ fn apply_token(token: &str, today: Date, mods: &mut Mods) -> Result<bool, QuickA
                 Change::Clear
             } else {
                 Change::Set(parse_date(value, today).map_err(|e| err(e.reason.into()))?)
+            });
+        }
+        "wait" => {
+            mods.wait = Some(if clears {
+                Change::Clear
+            } else if value.eq_ignore_ascii_case("someday") {
+                Change::Set(Wait::Someday)
+            } else {
+                Change::Set(Wait::Until(
+                    parse_date(value, today)
+                        .map_err(|e| err(e.reason.into()))?
+                        .date,
+                ))
             });
         }
         "sched" | "start" | "scheduled" => {
@@ -348,6 +370,20 @@ mod tests {
             Some("Fix #123 in C++ see http://x.y/z wow!")
         );
         assert!(m.add_tags.is_empty());
+    }
+
+    #[test]
+    fn wait_and_someday() {
+        assert_eq!(
+            parse("x wait:fri").wait,
+            Some(Change::Set(Wait::Until(date(2026, 10, 16))))
+        );
+        assert_eq!(
+            parse("x wait:someday").wait,
+            Some(Change::Set(Wait::Someday))
+        );
+        assert_eq!(parse("x wait:none").wait, Some(Change::Clear));
+        assert!(parse_mods("x wait:later", TODAY).is_err());
     }
 
     #[test]

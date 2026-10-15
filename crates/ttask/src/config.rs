@@ -15,6 +15,8 @@ pub struct Config {
     pub ui: UiConfig,
     /// Action name → key, e.g. `done = "x"`.
     pub keys: BTreeMap<String, String>,
+    /// Weights for the urgency score (the Next view, `--sort urgency`).
+    pub urgency: ttask_core::urgency::UrgencyWeights,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -140,6 +142,21 @@ pub const EXAMPLE: &str = r#"# ttask configuration. Every key is optional.
 [keys]
 # done = "x"
 # quick_add = "a"
+
+[urgency]                      # weights for the Next view and --sort urgency
+# next = 15.0                  # tagged +next
+# due = 12.0                   # scaled by how close / overdue
+# blocking = 8.0
+# priority_urgent = 9.0
+# priority_high = 6.0
+# priority_medium = 3.9
+# scheduled = 5.0
+# active = 4.0                 # timer running
+# age = 2.0
+# tags = 1.0
+# project = 1.0
+# notes = 1.0
+# blocked = -5.0
 "#;
 
 #[cfg(test)]

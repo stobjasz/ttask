@@ -87,6 +87,11 @@ pub fn task_line(task: &Task, depth: u8, today: Date, p: &Painter) -> String {
     if task.blocked {
         meta.push(p.paint(Tone::Yellow, "blocked"));
     }
+    if task.someday {
+        meta.push(p.paint(Tone::Dim, "someday"));
+    } else if let Some(wait) = task.wait_until.filter(|_| task.is_waiting(today)) {
+        meta.push(p.paint(Tone::Dim, &format!("wait {}", relative_label(wait, today))));
+    }
     if let Some(due) = due_label(task, today) {
         let tone = if task.is_overdue(today) {
             Tone::Red

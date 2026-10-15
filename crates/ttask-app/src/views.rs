@@ -39,6 +39,25 @@ impl View {
         View::builtin("Today", "due:<=today or sched:<=today", TaskSort::Smart)
     }
 
+    /// Everything actionable now, most urgent first.
+    pub fn next() -> View {
+        View::builtin(
+            "Next",
+            "not is:blocked and (sched:none or sched:<=today)",
+            TaskSort::Urgency,
+        )
+    }
+
+    /// Hidden by a future `wait:` date.
+    pub fn waiting() -> View {
+        View::builtin("Waiting", "is:waiting", TaskSort::Smart)
+    }
+
+    /// Parked with `wait:someday`.
+    pub fn someday() -> View {
+        View::builtin("Someday", "is:someday", TaskSort::Manual)
+    }
+
     pub fn upcoming() -> View {
         View::builtin("Upcoming", "due:>today or sched:>today", TaskSort::Smart)
     }
@@ -64,8 +83,11 @@ impl View {
         vec![
             View::inbox(),
             View::today(),
+            View::next(),
             View::upcoming(),
             View::overdue(),
+            View::waiting(),
+            View::someday(),
             View::all(),
             View::logbook(),
         ]

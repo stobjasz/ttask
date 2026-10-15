@@ -6,6 +6,7 @@ pub mod duration;
 pub mod filter;
 pub mod quickadd;
 pub mod recur;
+pub mod urgency;
 
 mod clock;
 mod task;

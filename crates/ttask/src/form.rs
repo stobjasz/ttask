@@ -5,7 +5,7 @@ use serde::Deserialize;
 use ttask_core::date::{format_time, parse_date};
 use ttask_core::duration::{format_minutes, parse_minutes};
 use ttask_core::jiff::civil::Date;
-use ttask_core::quickadd::{Change, Mods};
+use ttask_core::quickadd::{Change, Mods, Wait};
 use ttask_core::recur::{RecurMode, RecurRule};
 use ttask_core::{Priority, Task};
 
@@ -23,6 +23,8 @@ struct Form {
     due: String,
     #[serde(default)]
     scheduled: String,
+    #[serde(default)]
+    wait: String,
     #[serde(default)]
     estimate: String,
     #[serde(default)]
@@ -62,6 +64,7 @@ pub fn render(task: &Task) -> String {
          priority = {priority}   # low, medium, high, urgent\n\
          due = {due}         # 2026-11-30, 2026-11-30@17:00, fri, +3d\n\
          scheduled = {scheduled}\n\
+         wait = {wait}         # hide until a date, or someday\n\
          estimate = {estimate}    # 30m, 2h\n\
          repeat = {repeat}      # week, weekday, month@15, FREQ=...; prefix ! for after completion\n\
          notes = '''\n{notes}\n'''\n",
@@ -71,6 +74,11 @@ pub fn render(task: &Task) -> String {
         tags = tags.join(", "),
         priority = toml_string(task.priority.name()),
         due = toml_string(&due),
+        wait = toml_string(&if task.someday {
+            "someday".to_owned()
+        } else {
+            task.wait_until.map(|d| d.to_string()).unwrap_or_default()
+        }),
         scheduled = toml_string(
             &task
                 .scheduled_date
@@ -114,6 +122,11 @@ pub fn parse(text: &str, today: Date) -> anyhow::Result<(Mods, String)> {
     mods.sched = Some(match form.scheduled.trim() {
         "" => Change::Clear,
         s => Change::Set(parse_date(s, today)?.date),
+    });
+    mods.wait = Some(match form.wait.trim() {
+        "" => Change::Clear,
+        w if w.eq_ignore_ascii_case("someday") => Change::Set(Wait::Someday),
+        w => Change::Set(Wait::Until(parse_date(w, today)?.date)),
     });
     mods.estimate = Some(match form.estimate.trim() {
         "" => Change::Clear,

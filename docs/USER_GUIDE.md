@@ -89,6 +89,9 @@ That's enough to use ttask daily. The rest of this guide covers each feature in 
 | **Subtask** | A task inside another task (one level). |
 | **Checklist** | Lightweight items inside a task (`[ ] passport`), without dates or tags. |
 | **Dependency** | "Task B waits on task A". B shows as *blocked* until A is closed. |
+| **Waiting / Someday** | `wait:fri` hides a task from your lists until Friday; `wait:someday` parks it until you bring it back. |
+| **Urgency** | A score combining due date, priority, `+next`, blocking, age and more. The **Next** view sorts by it. |
+| **Context** | A saved filter applied to everything you list — e.g. only `#work` during work hours. |
 
 ---
 
@@ -178,6 +181,7 @@ ttask add 'Draft report due:fri' --notes "Use the Q3 numbers"
 | `!…` | Priority | `!low` `!med` `!high` `!urgent`, `!0`–`!3`, `!` (medium), `!!` (high), `!!!` (urgent) |
 | `due:` | Due date, optional `@time` | `due:fri`, `due:tom@17:00`, `due:+2w`, `due:2026-12-24` |
 | `sched:` (or `start:`) | Scheduled start date | `sched:mon` |
+| `wait:` | Hide until a date, or park indefinitely | `wait:fri`, `wait:+2w`, `wait:someday`, `wait:none` |
 | `every:` | Repeats on schedule | `every:week`, `every:weekday`, `every:month@15` |
 | `every!:` | Repeats after completion | `every!:3d` |
 | `~` | Estimate | `~30m`, `~2h`, `~1h30m` |
@@ -231,9 +235,12 @@ Without arguments, `ls` shows every open task.
 | --- | --- |
 | `inbox` | Open tasks without a project (manual order) |
 | `today` | Due today or earlier, or scheduled today or earlier — i.e. what to work on now |
+| `next` | Everything actionable (not blocked, not scheduled for later), **most urgent first** |
 | `upcoming` | Due or scheduled after today |
 | `overdue` | Open and past due |
-| `all` | Every open task |
+| `waiting` | Hidden by a future `wait:` date |
+| `someday` | Parked with `wait:someday` |
+| `all` | Every open task (except waiting and someday ones) |
 | `logbook` (or `done`) | Done and cancelled tasks, most recent first |
 
 ```sh
@@ -269,12 +276,15 @@ Quote the query in your shell when it contains `#`, `(`, `<`, `>` or `!`.
 | `has:notes`, `has:due`, `has:subtasks` | presence |
 | `is:recurring`, `is:blocked`, `is:subtask`, `is:overdue`, `is:open`, `is:done` | state |
 | `id:12` | one task |
+| `wait:<=fri`, `wait:none`, `wait:any`, `is:waiting`, `is:someday` | waiting / someday |
 
 Comparisons: `=` (default), `<`, `<=`, `>`, `>=`, followed by any [date phrase](#date-phrases) or number.
 
 **Combining:** terms side by side are ANDed. Use `and`, `or`, `not` and parentheses; `not` binds tightest, then `and`, then `or`. A leading `-` also negates (`-+someday`), but on the command line write `not +someday` (or put `--` before the argument), because arguments starting with `-` look like options.
 
-**Status:** a query that doesn't mention status shows only open tasks. Add `--all` or `status:all` to include closed ones.
+**Status:** a query that doesn't mention status shows only open tasks, and a query that doesn't mention `wait:`, `is:waiting` or `is:someday` hides waiting and someday tasks. `--all` (or `status:all wait:any`) shows everything.
+
+**Context:** if a [context](#contexts) is active, it narrows every list; `--no-context` ignores it for one command.
 
 ### Sorting
 
@@ -283,6 +293,7 @@ Comparisons: `=` (default), `<`, `<=`, `>`, `>=`, followed by any [date phrase](
 | Order | Meaning |
 | --- | --- |
 | `smart` (default) | due date (undated last), then priority, then manual order |
+| `urgency` | most urgent first; the urgency is printed after each line (`u15.8`) |
 | `manual` | your own order (set with `J`/`K` in the TUI) |
 | `priority` | highest priority first |
 | `created` | newest first |
@@ -299,6 +310,25 @@ Comparisons: `=` (default), `<`, `<=`, `>`, `>=`, followed by any [date phrase](
 ```
 
 id · status (`[ ]` open, `[x]` done, `[-]` cancelled) · priority marks · title · `↻` repeats · project · tags · `[done/total]` subtasks or `(done/total)` checklist · `blocked` · due date. Subtasks are indented under their parent. Overdue dates are red and today's are yellow on a colour terminal.
+
+### What to do next: urgency
+
+`ttask ls next` (the **Next** view in the TUI) lists everything you could work on now — open, not blocked, not scheduled for later, not waiting — sorted by **urgency**. Urgency adds up:
+
+| Factor | Default weight |
+| --- | --- |
+| tagged `+next` | 15 |
+| due date: 0.2× when two weeks away, rising to 1× when a week overdue | 12 |
+| another open task waits on this one | 8 |
+| priority urgent / high / medium | 9 / 6 / 3.9 |
+| scheduled for today or earlier | 5 |
+| its timer is running | 4 |
+| age (full weight at one year) | 2 |
+| has tags (0.8 / 0.9 / 1.0 for 1 / 2 / 3+) | 1 |
+| has a project / has notes | 1 / 1 |
+| waits on an open task | −5 |
+
+`ttask show 12` and the TUI detail pane show a task's urgency. Tune the weights under [`[urgency]`](#16-configuration-reference) — for example set `next = 0` if you don't use the `+next` tag, or raise `due` if deadlines should dominate.
 
 ### Search
 
@@ -383,6 +413,21 @@ ttask show 12 --history
 
 A new change after an undo discards the redo history, as in an editor.
 
+### Waiting and Someday
+
+Not everything on your list is actionable now. Hide it instead of letting it clutter Today and Next:
+
+```sh
+ttask add 'Follow up with Anna wait:+3d'     # out of sight for three days
+ttask edit 12 wait:fri                        # hide until Friday
+ttask edit 12 wait:someday                    # park it indefinitely
+ttask edit 12 wait:none                       # back in the lists
+ttask ls waiting                              # what's hidden, and until when
+ttask ls someday                              # the parking lot
+```
+
+A waiting task reappears by itself on its date. Waiting doesn't change the due date, so a task can be due Friday but hidden until Thursday. Reminders still fire. For recurring tasks the `wait:` date moves along with the due date to each new instance.
+
 ### Show a task
 
 ```sh
@@ -443,6 +488,22 @@ ttask ls "This week"
 ttask filter ls
 ttask filter rm "This week"
 ```
+
+### Contexts
+
+A context is a saved filter that applies to **everything** you list: `ls`, every TUI view and its counts, and the calendar export. Use it to focus on one area of your life at a time.
+
+```sh
+ttask context define work '#work or +office'   # save the filter and switch to it
+ttask context home                             # switch to another saved filter
+ttask context                                  # show the active context
+ttask context none                             # back to everything
+ttask ls --no-context                          # ignore it for one command
+```
+
+When the context is a plain combination of a project and/or tags (`#work`, `#work +office`), **new tasks inherit them**: `ttask add Prep slides` inside the `work` context lands in `#work` — unless you give another project. Contexts with `or`, dates or other terms only filter.
+
+Search, `show` and commands that take task ids (`done 12`, `edit 12`) ignore the context, so you can always reach any task. The TUI header shows the active context as `@work`; switch it with `C` or from the command palette.
 
 ---
 
@@ -599,7 +660,7 @@ Start it with `ttask` (no arguments). It needs an interactive terminal of at lea
  a add · e edit · x done · d due · / filter · : palette · ? help · q quit
 ```
 
-- **Header:** current view, task count, active filter, marked count, running timer, and `[L]` for an encrypted database.
+- **Header:** current view, task count, active context (`@work`), active filter, marked count, running timer, and `[L]` for an encrypted database.
 - **Sidebar:** built-in views with open counts, projects (subprojects indented), tags in use, saved filters.
 - **List:** the tasks of the selected view; subtasks indented under their parent.
 - **Detail:** everything about the selected task, including notes, checklist and subtasks. It appears when the terminal is at least 100 columns wide; on narrower terminals press `Enter` for a full-screen detail view.
@@ -638,6 +699,8 @@ The TUI refreshes automatically when another process (e.g. `ttask add` in anothe
 | `/` | filter the current view |
 | `Ctrl-f` | full-text search (includes closed tasks) |
 | `S` | save the current view + filter as a saved filter |
+| `w` | wait: hide until a date, `someday`, or empty to bring back |
+| `C` | switch context (`Tab` completes saved-filter names; empty or `none` clears) |
 | `:`, `Ctrl-p` | command palette |
 | `u`, `Ctrl-z` | undo |
 | `Ctrl-r`, `Ctrl-y` | redo |
@@ -771,6 +834,8 @@ ttask export --format csv --output tasks.csv
 ttask export --format markdown --output tasks.md
 ttask export --format todotxt --output todo.txt
 ttask export --encrypt --output tasks.age      # encrypted (asks for a passphrase)
+ttask export --format ics --output ~/tasks.ics # calendar of due tasks
+ttask export --format ics --filter '#work'     # only some tasks
 ```
 
 | Format | Use it for | Contains |
@@ -778,9 +843,12 @@ ttask export --encrypt --output tasks.age      # encrypted (asks for a passphras
 | `json` | backups, moving between machines | everything: projects, tags, tasks, subtasks, checklists, reminders, dependencies, time log, saved filters, history |
 | `csv` | spreadsheets | one row per task: id, uid, title, status, priority, project, tags, dates, estimate, recurrence, parent, timestamps, notes |
 | `markdown` | reading, sharing | a report grouped by project with checkboxes and notes |
-| `todotxt` | [todo.txt](https://github.com/todotxt/todo.txt) apps | `(A) 2026-10-01 Title +project @tag due:… t:… rrule:… uid:…` |
+| `todotxt` | [todo.txt](https://github.com/todotxt/todo.txt) apps | `(A) 2026-10-01 Title +project @tag due:… t:… wait:… rrule:… uid:…` |
+| `ics` | calendar apps | one event per open task with a due date (see below) |
 
 Exporting an encrypted database to a plain file prints a warning. `--encrypt` writes an [age](https://age-encryption.org) file protected by a passphrase; `TTASK_EXPORT_PASSPHRASE` supplies it non-interactively.
+
+**Calendar (`ics`).** Open, visible tasks with a due date become calendar events: date-only tasks are all-day events, timed tasks last their estimate (30 minutes without one). Schedule-based recurrences (`every:`) appear as repeating events, unfired reminders as alarms, and notes, project and tags go into the description. The active context and `--filter` limit what's included. To keep a calendar up to date, re-export to the same file on a schedule and subscribe to it from your calendar app (Outlook, Thunderbird, Apple Calendar and most others can subscribe to a local or synced `.ics` file). The file is plain text — keep it out of shared folders if your database is encrypted.
 
 ### Import
 
@@ -789,10 +857,11 @@ ttask import tasks.json --dry-run    # report what would change, write nothing
 ttask import tasks.json
 ttask import todo.txt
 ttask import tasks.age               # encrypted exports are detected and decrypted
+ttask import taskwarrior.json        # output of `task export`
 ttask undo                           # reverts the whole import
 ```
 
-The format is detected from the file; force it with `--format json|csv|todotxt|todoist|ticktick`.
+The format is detected from the file; force it with `--format json|csv|todotxt|todoist|ticktick|taskwarrior`.
 
 - **Re-importing updates instead of duplicating.** Tasks are matched by `uid`, which JSON, CSV and todo.txt exports all carry.
 - `--project NAME` puts tasks that have no project into `NAME`.
@@ -807,6 +876,8 @@ ttask import export.csv --map title=Name,due=Deadline,project=Board
 Field names for `--map`: `uid title notes project tags priority due due_time scheduled status estimate recur recur_mode parent created updated completed_at`.
 
 **Todoist.** Use Todoist's per-project CSV export. The file name becomes the project (override with `--project`), sections become subprojects, indented tasks become subtasks, `@labels` become tags, p1–p4 map to urgent–low, and dates like `every monday` become recurrences. Dates ttask can't read are kept in the task's notes.
+
+**Taskwarrior.** Run `task export > taskwarrior.json`, then `ttask import taskwarrior.json`. Descriptions, projects (`Home.Garden` becomes `Home/Garden`), tags, priorities, due/scheduled/wait dates, annotations (as dated note lines), dependencies and completion are imported; the Taskwarrior uuid becomes the task's uid, so you can re-import later to pick up changes. A recurring task becomes one ttask recurring task (its earliest pending instance). Deleted tasks and user-defined attributes are skipped, with a summary in the warnings.
 
 **TickTick.** Use TickTick's backup CSV (Settings → Backup). Folder/List become the project, tags, notes, due/start dates, priority, repeat rules, completion and parent/child links are imported.
 
@@ -834,6 +905,21 @@ show_detail_pane = "auto"            # auto (≥100 columns) | always | never
 [keys]                               # rebind TUI actions
 done = "ctrl-x"
 quick_add = "n"
+
+[urgency]                            # weights for the Next view and --sort urgency
+next = 15.0
+due = 12.0
+blocking = 8.0
+priority_urgent = 9.0
+priority_high = 6.0
+priority_medium = 3.9
+scheduled = 5.0
+active = 4.0
+age = 2.0
+tags = 1.0
+project = 1.0
+notes = 1.0
+blocked = -5.0
 ```
 
 ### Rebinding keys
@@ -842,7 +928,7 @@ Under `[keys]`, write `action = "key"`. The key replaces that action's default k
 
 **Keys:** a character (`x`, `J`, `/`), or `enter`, `esc`, `tab`, `shift-tab`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `backspace`, `f1`–`f12`, with optional `ctrl-` / `alt-` prefixes (`ctrl-f`, `alt-up`).
 
-**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `help` `quit` `back`.
+**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `wait` `context` `help` `quit` `back`.
 
 ### Environment variables
 

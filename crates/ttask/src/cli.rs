@@ -58,10 +58,13 @@ pub enum Command {
         /// e.g. `today`, `#work and !>=2`, `not +someday`
         #[arg(num_args = 0..)]
         query: Vec<String>,
-        /// Include done and cancelled tasks
+        /// Include done, cancelled, waiting and someday tasks
         #[arg(long, short)]
         all: bool,
-        /// smart | manual | priority | created | completed | title
+        /// Ignore the active context
+        #[arg(long)]
+        no_context: bool,
+        /// smart | urgency | manual | priority | created | completed | title
         #[arg(long)]
         sort: Option<String>,
         #[arg(long)]
@@ -163,6 +166,12 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<TagAction>,
     },
+    /// Show or switch the context: `ttask context work`, `ttask context none`,
+    /// `ttask context define work '#work or +office'`
+    Context {
+        #[arg(num_args = 0.., value_name = "NAME | none | define NAME QUERY")]
+        args: Vec<String>,
+    },
     /// Manage saved filters
     #[command(visible_alias = "filters")]
     Filter {
@@ -194,6 +203,9 @@ pub enum Command {
         /// Encrypt the output with a passphrase (age); needs --output
         #[arg(long)]
         encrypt: bool,
+        /// With --format ics: which tasks to include (default: every open task with a due date)
+        #[arg(long, value_name = "QUERY")]
+        filter: Option<String>,
     },
     /// Encryption and maintenance
     Db {
@@ -334,6 +346,7 @@ pub enum ImportFormat {
     Todotxt,
     Todoist,
     Ticktick,
+    Taskwarrior,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -342,6 +355,8 @@ pub enum ExportFormat {
     Csv,
     Markdown,
     Todotxt,
+    /// iCalendar events for tasks with due dates
+    Ics,
 }
 
 #[cfg(test)]

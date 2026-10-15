@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use secrecy::SecretString;
 use ttask_app::{App, TaskDetail, View, ViewKind, arrange_tree};
 use ttask_core::date::parse_date;
-use ttask_core::quickadd::{Change, Mods, is_tag_name};
+use ttask_core::quickadd::{Change, Mods, Wait, is_tag_name};
 use ttask_core::{Priority, Task, TaskId};
 use ttask_store::TaskSort;
 
@@ -76,6 +76,8 @@ pub enum PromptKind {
     Search,
     ChecklistAdd(TaskId),
     SaveFilter,
+    Wait(Vec<TaskId>),
+    Context,
 }
 
 impl PromptKind {
@@ -92,6 +94,8 @@ impl PromptKind {
             PromptKind::Search => "Search",
             PromptKind::ChecklistAdd(_) => "Checklist item",
             PromptKind::SaveFilter => "Save filter as",
+            PromptKind::Wait(_) => "Wait until (date, someday, none)",
+            PromptKind::Context => "Context (saved filter, none)",
         }
     }
 }
@@ -151,6 +155,8 @@ pub struct Tui {
     pub page: usize,
     pub width: u16,
     pub timer: Option<(ttask_app::TimeEntry, Task)>,
+    /// Name of the active context, shown in the header.
+    pub context: Option<String>,
     editor_request: Option<TaskId>,
     data_version: i64,
     last_activity: Instant,
@@ -190,6 +196,7 @@ impl Tui {
             page: 10,
             width: 120,
             timer: None,
+            context: None,
             editor_request: None,
             data_version: 0,
             last_activity: now,
@@ -232,6 +239,7 @@ impl Tui {
         self.marked.retain(|id| live.contains(id));
         self.load_detail();
         self.timer = self.app.running_timer()?;
+        self.context = self.app.active_context()?.map(|(name, _)| name);
         self.data_version = self.app.store().data_version()?;
         Ok(())
     }
@@ -474,7 +482,21 @@ impl Tui {
             }
             KeyCode::Enter => self.submit(prompt),
             KeyCode::Tab if matches!(prompt.kind, PromptKind::Move(_)) => {
-                complete_project(&self.app, &mut prompt.input);
+                let paths: Vec<String> = self
+                    .app
+                    .projects(false)
+                    .map(|ps| ps.into_iter().map(|p| p.path).collect())
+                    .unwrap_or_default();
+                complete_from(&paths, &mut prompt.input);
+                Mode::Prompt(prompt)
+            }
+            KeyCode::Tab if prompt.kind == PromptKind::Context => {
+                let names: Vec<String> = self
+                    .app
+                    .saved_filters()
+                    .map(|fs| fs.into_iter().map(|f| f.name).collect())
+                    .unwrap_or_default();
+                complete_from(&names, &mut prompt.input);
                 Mode::Prompt(prompt)
             }
             _ => {
@@ -516,6 +538,7 @@ impl Tui {
                         return std::mem::replace(&mut self.mode, Mode::Normal);
                     }
                     Some(Target::View(view)) => self.open_view(view),
+                    Some(Target::Context(name)) => self.switch_context(name.as_deref()),
                     None => {}
                 }
                 Mode::Normal
@@ -665,7 +688,7 @@ impl Tui {
                 if text.trim().is_empty() {
                     Ok(None)
                 } else {
-                    let query = format!("status:all text:\"{}\"", text.replace('"', ""));
+                    let query = format!("status:all wait:any text:\"{}\"", text.replace('"', ""));
                     self.open_view(View {
                         name: format!("Search: {text}"),
                         query,
@@ -685,6 +708,47 @@ impl Tui {
                 }
                 Err(e) => Err(e.to_string()),
             },
+            PromptKind::Wait(ids) => {
+                let trimmed = text.trim();
+                let change = match trimmed.to_ascii_lowercase().as_str() {
+                    "" | "none" => Ok(Change::Clear),
+                    "someday" => Ok(Change::Set(Wait::Someday)),
+                    _ => parse_date(trimmed, today)
+                        .map(|spec| Change::Set(Wait::Until(spec.date)))
+                        .map_err(|e| e.to_string()),
+                };
+                change.and_then(|wait| {
+                    let mods = Mods {
+                        wait: Some(wait),
+                        ..Mods::default()
+                    };
+                    self.app
+                        .edit_with(ids, &mods)
+                        .map(|t| {
+                            Some(format!(
+                                "{} task{} {}",
+                                t.len(),
+                                plural(t.len()),
+                                if trimmed.is_empty() || trimmed == "none" {
+                                    "back in the lists"
+                                } else {
+                                    "parked"
+                                }
+                            ))
+                        })
+                        .map_err(|e| e.to_string())
+                })
+            }
+            PromptKind::Context => {
+                let name = text.trim();
+                let wanted =
+                    (!name.is_empty() && !name.eq_ignore_ascii_case("none")).then_some(name);
+                match self.app.set_context(wanted) {
+                    Ok(Some(name)) => Ok(Some(format!("Context: {name}"))),
+                    Ok(None) => Ok(Some("Context cleared".into())),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
             PromptKind::SaveFilter => {
                 let query = combine(&self.current.query, &self.filter);
                 self.app
@@ -939,6 +1003,26 @@ impl Tui {
                 }
             }
             Action::SaveFilter => self.open_prompt(PromptKind::SaveFilter, ""),
+            Action::Wait => {
+                let ids = self.targets();
+                let initial = self
+                    .selected_task()
+                    .map(|t| {
+                        if t.someday {
+                            "someday".to_owned()
+                        } else {
+                            t.wait_until.map(|d| d.to_string()).unwrap_or_default()
+                        }
+                    })
+                    .unwrap_or_default();
+                if !ids.is_empty() {
+                    self.open_prompt(PromptKind::Wait(ids), &initial);
+                }
+            }
+            Action::Context => {
+                let current = self.context.clone().unwrap_or_default();
+                self.open_prompt(PromptKind::Context, &current);
+            }
             Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::Quit => self.quit = true,
         }
@@ -1103,7 +1187,32 @@ impl Tui {
                 target: Target::Action(*action),
             });
         }
+        if let Ok(filters) = self.app.saved_filters() {
+            for filter in filters {
+                items.push(Item {
+                    label: format!("Context: {}", filter.name),
+                    hint: filter.query,
+                    target: Target::Context(Some(filter.name)),
+                });
+            }
+        }
+        if self.context.is_some() {
+            items.push(Item {
+                label: "Context: none".into(),
+                hint: "show everything".into(),
+                target: Target::Context(None),
+            });
+        }
         items
+    }
+
+    fn switch_context(&mut self, name: Option<&str>) {
+        self.mutate(|app| {
+            Ok(match app.set_context(name)? {
+                Some(name) => format!("Context: {name}"),
+                None => "Context cleared".into(),
+            })
+        });
     }
 }
 
@@ -1163,13 +1272,9 @@ fn build_sidebar(app: &App) -> anyhow::Result<Vec<SidebarEntry>> {
     Ok(entries)
 }
 
-/// Tab-completes a project path from existing projects.
-fn complete_project(app: &App, input: &mut LineInput) {
+/// Tab-completes `input` from `candidates`, cycling once it is complete.
+fn complete_from(paths: &[String], input: &mut LineInput) {
     let typed = input.text().to_lowercase();
-    let Ok(projects) = app.projects(false) else {
-        return;
-    };
-    let paths: Vec<String> = projects.into_iter().map(|p| p.path).collect();
     let next = match paths.iter().position(|p| p.to_lowercase() == typed) {
         // Already complete: cycle to the next match of the same prefix.
         Some(i) => paths

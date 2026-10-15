@@ -27,6 +27,7 @@ clears a field and `-+tag` removes a tag).
 | `!low` `!med` `!high` `!urgent`, `!0`–`!3`, `!!` | priority |
 | `due:fri`, `due:tom@17:00`, `due:+3d`, `due:2026-12-24`, `due:none` | due date |
 | `sched:mon` | scheduled (hidden from Today until then) |
+| `wait:fri`, `wait:someday`, `wait:none` | hide until a date / park indefinitely / bring back |
 | `every:week`, `every:weekday`, `every:mon,thu`, `every:month@15`, `every:month@lastfri`, `every!:3d` | recurrence (`!` = after completion) |
 | `~30m`, `~2h` | estimate |
 | `remind:due-1h`, `remind:09:00`, `remind:tom@8am` | reminder |
@@ -35,7 +36,8 @@ clears a field and `-+tag` removes a tag).
 ## CLI
 
 ```sh
-ttask ls                    # open tasks; views: inbox today upcoming overdue all logbook
+ttask ls                    # open tasks; views: inbox today next upcoming overdue waiting someday all logbook
+ttask ls next               # actionable tasks, most urgent first (--sort urgency anywhere)
 ttask ls '#work and (due:<=today or !>=2) and not +someday'
 ttask ls today --json       # every read command speaks JSON
 ttask show 12 --history
@@ -50,8 +52,9 @@ ttask block 12 --on 9       # 12 waits on 9
 ttask timer start 12 ; ttask timer stop
 ttask project ls|add|rename|archive|rm ; ttask tag ls|rename|rm
 ttask filter save "This week" 'due:<=eow' ; ttask ls "This week"
-ttask import tasks.json | todo.txt | export.csv [--dry-run] [--map title=Name]
-ttask export --format json|csv|markdown|todotxt [--output f] [--encrypt]
+ttask context define work '#work' ; ttask context none   # focus every list on one area
+ttask import tasks.json | todo.txt | export.csv | taskwarrior.json [--dry-run] [--map title=Name]
+ttask export --format json|csv|markdown|todotxt|ics [--output f] [--encrypt] [--filter Q]
 ttask remind [--run | --install | --uninstall]
 ttask db info|backup|check|passwd|encrypt|decrypt|gc|gc-backups
 ttask gc ; ttask lock ; ttask config [path|init] ; ttask completions powershell
@@ -80,6 +83,7 @@ password, 4 database locked, corrupt, or from a newer ttask.
 | `v` | mark for multi-select | `J`/`K` | reorder (inbox/projects) |
 | `s` | skip occurrence | `D` | delete (asks) |
 | `T` | start/stop timer | `S` | save current filter |
+| `w` | wait / someday | `C` | switch context |
 | `?` | help | `q` | quit |
 
 `keymap = "simple"` drops the vim keys (reorder with `Alt-↑/↓`); any action
