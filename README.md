@@ -124,6 +124,11 @@ $env:OPENSSL_SRC_PERL = 'C:\Strawberry\perl\bin\perl.exe'   # or put Strawberry 
 
 The first build compiles OpenSSL and takes a few minutes; later builds are cached.
 
+**Portable Windows exe:** `.\scriptsuild-release.ps1` builds a single
+`dist	task-<version>-x86_64-pc-windows-msvc.exe` (about 12 MB) with the C
+runtime linked statically, so it only depends on Windows system DLLs, plus a
+`.sha256` checksum. Copy the exe anywhere and run it.
+
 ## Layout
 
 | Crate | Responsibility |
