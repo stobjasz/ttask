@@ -1,12 +1,14 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::migrations::{migrate, schema_version};
+use crate::db::Db;
+use crate::maintenance::export_to;
+use crate::migrations::{SCHEMA_VERSION, check_supported, migrate, schema_version};
 use crate::{Result, StoreError};
 
 /// Every plain SQLite file starts with these 16 bytes; SQLCipher files start
@@ -73,6 +75,7 @@ impl PasswordSource for SecretString {
 pub struct Store {
     pub(crate) conn: Connection,
     mode: DbMode,
+    path: PathBuf,
 }
 
 impl std::fmt::Debug for Store {
@@ -101,7 +104,11 @@ impl Store {
         } else {
             DbMode::Plain
         };
-        Ok(Store { conn, mode })
+        Ok(Store {
+            conn,
+            mode,
+            path: path.to_owned(),
+        })
     }
 
     /// Opens an existing database, asking `passwords` only if the file is encrypted,
@@ -111,22 +118,73 @@ impl Store {
             FileState::Missing => return Err(StoreError::Missing(path.to_owned())),
             FileState::Exists(mode) => mode,
         };
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE;
+        // CREATE is needed even for an existing file: ATTACHed databases
+        // (backups, conversions) inherit the flags and must be creatable.
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
         let mut conn = match mode {
             DbMode::Plain => connect(path, flags, None)?,
             DbMode::Encrypted => unlock(path, flags, passwords)?,
         };
+        let version = schema_version(&conn)?;
+        check_supported(version)?;
+        if version > 0 && version < SCHEMA_VERSION {
+            // Keep a copy from before the upgrade so a failed one can be undone by hand.
+            let backup = sibling(path, &format!("pre-v{}.bak", SCHEMA_VERSION));
+            if detect(&backup)? == FileState::Missing {
+                export_to(&conn, &backup, None)?;
+            }
+        }
         migrate(&mut conn)?;
-        Ok(Store { conn, mode })
+        Ok(Store {
+            conn,
+            mode,
+            path: path.to_owned(),
+        })
     }
 
     pub fn mode(&self) -> DbMode {
         self.mode
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn schema_version(&self) -> Result<u32> {
         schema_version(&self.conn)
     }
+
+    /// Read access outside a transaction.
+    pub fn db(&self) -> Db<'_> {
+        Db { conn: &self.conn }
+    }
+
+    /// Runs `f` in one immediate transaction: all of it commits or none does.
+    pub fn write<T>(&mut self, f: impl FnOnce(&Db<'_>) -> Result<T>) -> Result<T> {
+        self.write_with(f)
+    }
+
+    /// [`Store::write`] for callers with their own error type.
+    pub fn write_with<T, E: From<StoreError>>(
+        &mut self,
+        f: impl FnOnce(&Db<'_>) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(StoreError::from)?;
+        let out = f(&Db { conn: &tx })?;
+        tx.commit().map_err(StoreError::from)?;
+        Ok(out)
+    }
+}
+
+/// `dir/name.db` + `ext` → `dir/name.db.ext`.
+pub(crate) fn sibling(path: &Path, ext: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(ext);
+    path.with_file_name(name)
 }
 
 fn unlock(path: &Path, flags: OpenFlags, passwords: &mut dyn PasswordSource) -> Result<Connection> {

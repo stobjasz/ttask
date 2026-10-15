@@ -32,6 +32,12 @@ pub enum StoreError {
     #[error("task {0} not found")]
     TaskNotFound(TaskId),
 
+    #[error("{0} not found")]
+    NotFound(String),
+
+    #[error("{0}")]
+    Invalid(String),
+
     #[error(transparent)]
     Io(#[from] io::Error),
 
@@ -46,5 +52,11 @@ impl From<rusqlite::Error> for StoreError {
             Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => StoreError::Locked,
             _ => StoreError::Sqlite(err),
         }
+    }
+}
+
+impl From<serde_json::Error> for StoreError {
+    fn from(err: serde_json::Error) -> Self {
+        StoreError::Invalid(format!("corrupt journal entry: {err}"))
     }
 }

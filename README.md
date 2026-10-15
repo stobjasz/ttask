@@ -1,31 +1,105 @@
 # ttask
 
 A keyboard-driven personal task tracker for the terminal. Tasks live in one
-local SQLite file, plain or encrypted with a password (SQLCipher).
+local SQLite file, plain or encrypted with a password (SQLCipher). Nothing
+leaves your machine unless you export it.
 
-Design: [DESIGN.md](DESIGN.md). Status: milestone M0 (foundation) — storage,
-encryption, and a minimal CLI. The TUI and quick-add syntax arrive in M1.
+Design: [DESIGN.md](DESIGN.md).
 
-## Usage
+## Quick start
 
 ```sh
-ttask init                 # plain database
-ttask init --encrypt       # password-encrypted database (prompts twice)
-
-ttask add Pay rent
-ttask ls                   # open tasks; --all includes done
-ttask done 1 2
-ttask --json ls            # machine-readable output
+ttask init                  # or: ttask init --encrypt
+ttask add Pay rent #home +bills !high due:fri every:month remind:due-1h
+ttask                       # full-screen TUI
 ```
 
-The database lives in the platform data directory (e.g.
-`%APPDATA%\ttask\data\ttask.db` on Windows); override it with `--db <path>`
-or `TTASK_DB`. For an encrypted database the password comes from
-`--password-file <path>`, then `TTASK_PASSWORD` (prints a warning), then an
-interactive prompt. A forgotten password cannot be recovered.
+## Quick-add syntax
+
+Used by `ttask add`, the TUI `a` prompt, and `ttask edit` (where `none`
+clears a field and `-+tag` removes a tag).
+
+| Token | Meaning |
+| --- | --- |
+| `#work`, `#work/clientA`, `#none` | project (one level of nesting) |
+| `+tag`, `-+tag` | add / remove a tag |
+| `!low` `!med` `!high` `!urgent`, `!0`–`!3`, `!!` | priority |
+| `due:fri`, `due:tom@17:00`, `due:+3d`, `due:2026-12-24`, `due:none` | due date |
+| `sched:mon` | scheduled (hidden from Today until then) |
+| `every:week`, `every:weekday`, `every:mon,thu`, `every:month@15`, `every:month@lastfri`, `every!:3d` | recurrence (`!` = after completion) |
+| `~30m`, `~2h` | estimate |
+| `remind:due-1h`, `remind:09:00`, `remind:tom@8am` | reminder |
+| `\#literal` | escape |
+
+## CLI
+
+```sh
+ttask ls                    # open tasks; views: inbox today upcoming overdue all logbook
+ttask ls '#work and (due:<=today or !>=2) and not +someday'
+ttask ls today --json       # every read command speaks JSON
+ttask show 12 --history
+ttask edit 12 due:+3d -+later !urgent New title
+ttask edit 12               # $EDITOR on a TOML form
+ttask done 12 13            # recurring tasks spawn their next instance
+ttask reopen | cancel | rm | skip <ids>
+ttask undo / ttask redo     # every action, including imports
+ttask search invoice
+ttask checklist 12 add passport ; ttask checklist 12 toggle 1
+ttask block 12 --on 9       # 12 waits on 9
+ttask timer start 12 ; ttask timer stop
+ttask project ls|add|rename|archive|rm ; ttask tag ls|rename|rm
+ttask filter save "This week" 'due:<=eow' ; ttask ls "This week"
+ttask import tasks.json | todo.txt | export.csv [--dry-run] [--map title=Name]
+ttask export --format json|csv|markdown|todotxt [--output f] [--encrypt]
+ttask remind [--run | --install | --uninstall]
+ttask db info|backup|check|passwd|encrypt|decrypt|gc|gc-backups
+ttask gc ; ttask lock ; ttask config [path|init] ; ttask completions powershell
+```
+
+Filter fields: `project tag status priority due sched created done text`,
+`has:notes|due|subtasks`, `is:recurring|blocked|subtask|overdue`, `id:N`,
+bare words (full-text), `"quoted phrases"`, `and`/`or`/`not`, parentheses.
+Use `not +tag` (or `--` before an argument starting with `-`).
 
 Exit codes: 0 ok, 1 usage or other error, 2 not found, 3 wrong or missing
 password, 4 database locked, corrupt, or from a newer ttask.
+
+## TUI keys (vim preset)
+
+| Key | Action | Key | Action |
+| --- | --- | --- | --- |
+| `j`/`k` `↓`/`↑` | move | `a` / `A` | quick-add / subtask |
+| `h`/`l` `Tab` | switch pane | `e` / `E` | edit title / notes in `$EDITOR` |
+| `g`/`G` | top / bottom | `M` | modify with quick-add tokens |
+| `Enter` | open / full-screen detail | `x` / `X` | toggle done / cancel |
+| `/` | filter view | `1`–`4` | priority low…urgent |
+| `Ctrl-f` | full-text search | `d` `m` `t` | due / move / tags |
+| `:` | command palette | `c` | add checklist item |
+| `u` / `Ctrl-r` | undo / redo | `Space` | mark (list), toggle item (detail) |
+| `v` | mark for multi-select | `J`/`K` | reorder (inbox/projects) |
+| `s` | skip occurrence | `D` | delete (asks) |
+| `T` | start/stop timer | `S` | save current filter |
+| `?` | help | `q` | quit |
+
+`keymap = "simple"` drops the vim keys (reorder with `Alt-↑/↓`); any action
+can be rebound under `[keys]` in the config.
+
+## Configuration
+
+`ttask config init` writes a commented `config.toml` (path: `ttask config
+path`, override with `TTASK_CONFIG`). Highlights:
+
+- `database.path`, `database.backups = { daily = 7, weekly = 4 }` — rotating
+  backups in `<db dir>/backups/`, made on the first open each day.
+- `security.remember = "keychain"` caches the password in the OS keychain;
+  `security.password_cmd = "pass show ttask"`; `security.idle_lock_minutes`
+  re-locks the TUI.
+- `ui.theme = auto|dark|light|ascii`, `ui.keymap = vim|simple`,
+  `ui.show_detail_pane = auto|always|never`. `NO_COLOR` is honoured.
+
+For an encrypted database the password comes from `--password-file`, else
+`password_cmd`, the keychain, `TTASK_PASSWORD` (warns), then a prompt. A
+forgotten password cannot be recovered.
 
 ## Building
 
@@ -49,7 +123,8 @@ The first build compiles OpenSSL and takes a few minutes; later builds are cache
 
 | Crate | Responsibility |
 | --- | --- |
-| `crates/ttask-core` | Domain types, `Clock`; no I/O |
-| `crates/ttask-store` | DB opener (plain/encrypted detection, keying), migrations, repository |
-| `crates/ttask-app` | Services used by the CLI and, later, the TUI |
-| `crates/ttask` | The `ttask` binary (clap CLI) |
+| `crates/ttask-core` | Domain types, dates, quick-add, recurrence, filter language; no I/O |
+| `crates/ttask-store` | DB opener (plain/encrypted), migrations, repository, undo journal, maintenance |
+| `crates/ttask-app` | Services (one undoable transaction per action), views, import/export, backups |
+| `crates/ttask-tui` | ratatui TUI: state machine, rendering, keymaps, palette |
+| `crates/ttask` | The `ttask` binary: CLI, config, password sources, keychain, reminders |

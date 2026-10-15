@@ -9,7 +9,12 @@ license.workspace = true
 [dependencies]
 ttask-core.workspace = true
 ttask-store.workspace = true
+csv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+secrecy.workspace = true
 tempfile.workspace = true

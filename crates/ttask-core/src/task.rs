@@ -1,16 +1,20 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::Serialize;
+use jiff::civil::{Date, Time};
+use serde::{Deserialize, Serialize};
+
+use crate::recur::RecurMode;
 
 pub type TaskId = i64;
+pub type ProjectId = i64;
 
 /// Generates a new ULID, the stable identifier used across export/import.
 pub fn new_uid() -> String {
     ulid::Ulid::generate().to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Open,
@@ -52,20 +56,23 @@ impl FromStr for Status {
         match s {
             "open" => Ok(Status::Open),
             "done" => Ok(Status::Done),
-            "cancelled" => Ok(Status::Cancelled),
+            "cancelled" | "canceled" => Ok(Status::Cancelled),
             other => Err(ParseStatusError(other.to_owned())),
         }
     }
 }
 
-/// Priority 0 (none) to 3 (urgent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize)]
+/// Priority 0 (low, the default) to 3 (urgent).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, Hash,
+)]
 #[serde(transparent)]
 pub struct Priority(u8);
 
 impl Priority {
     pub const NONE: Priority = Priority(0);
     pub const MAX: u8 = 3;
+    const NAMES: [&'static str; 4] = ["low", "medium", "high", "urgent"];
 
     /// Returns `None` when `value` is above [`Priority::MAX`].
     pub fn new(value: u8) -> Option<Priority> {
@@ -75,39 +82,133 @@ impl Priority {
     pub fn value(self) -> u8 {
         self.0
     }
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self.0 as usize]
+    }
+
+    /// `low`, `med`/`medium`, `high`, `urgent` (lowercase).
+    pub fn from_name(name: &str) -> Option<Priority> {
+        Some(Priority(match name {
+            "low" | "none" => 0,
+            "med" | "medium" => 1,
+            "high" => 2,
+            "urgent" => 3,
+            _ => return None,
+        }))
+    }
+
+    /// `""`, `"!"`, `"!!"`, `"!!!"`.
+    pub fn marks(self) -> &'static str {
+        ["", "!", "!!", "!!!"][self.0 as usize]
+    }
 }
 
 /// Fields a caller supplies when creating a task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewTask {
     pub title: String,
     pub notes: String,
     pub priority: Priority,
+    pub project_id: Option<ProjectId>,
+    pub parent_id: Option<TaskId>,
+    pub due_date: Option<Date>,
+    pub due_time: Option<Time>,
+    pub scheduled_date: Option<Date>,
+    pub estimate_min: Option<u32>,
+    pub recur_rule: Option<String>,
+    pub recur_mode: Option<RecurMode>,
+    pub recur_series: Option<String>,
+    pub tags: Vec<String>,
 }
 
 impl NewTask {
     pub fn titled(title: impl Into<String>) -> NewTask {
         NewTask {
             title: title.into(),
-            notes: String::new(),
-            priority: Priority::NONE,
+            ..NewTask::default()
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct Progress {
+    pub done: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Task {
     pub id: TaskId,
     pub uid: String,
+    pub parent_id: Option<TaskId>,
+    pub project_id: Option<ProjectId>,
+    /// `name` or `parent/name`.
+    pub project: Option<String>,
     pub title: String,
     pub notes: String,
     pub status: Status,
     pub priority: Priority,
-    pub due_date: Option<String>,
-    pub due_time: Option<String>,
+    pub due_date: Option<Date>,
+    pub due_time: Option<Time>,
+    pub scheduled_date: Option<Date>,
+    pub estimate_min: Option<u32>,
+    pub recur_rule: Option<String>,
+    pub recur_mode: Option<RecurMode>,
+    pub recur_series: Option<String>,
+    pub tags: Vec<String>,
+    pub sort_order: f64,
     pub created_at: i64,
     pub updated_at: i64,
     pub completed_at: Option<i64>,
+    pub subtasks: Progress,
+    pub checklist: Progress,
+    /// Waiting on an open task (dependencies).
+    pub blocked: bool,
+}
+
+impl Task {
+    pub fn is_open(&self) -> bool {
+        self.status == Status::Open
+    }
+
+    pub fn is_overdue(&self, today: Date) -> bool {
+        self.is_open() && self.due_date.is_some_and(|d| d < today)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Project {
+    pub id: ProjectId,
+    pub uid: String,
+    pub parent_id: Option<ProjectId>,
+    pub name: String,
+    /// `name` or `parent/name`.
+    pub path: String,
+    pub color: Option<String>,
+    pub archived: bool,
+    pub open_tasks: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TagInfo {
+    pub name: String,
+    pub color: Option<String>,
+    pub open_tasks: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecklistItem {
+    pub id: i64,
+    pub text: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SavedFilter {
+    pub id: i64,
+    pub name: String,
+    pub query: String,
 }
 
 #[cfg(test)]
@@ -123,9 +224,12 @@ mod tests {
     }
 
     #[test]
-    fn priority_rejects_values_above_max() {
+    fn priority_names_and_bounds() {
         assert_eq!(Priority::new(3).map(Priority::value), Some(3));
         assert_eq!(Priority::new(4), None);
+        assert_eq!(Priority::from_name("high"), Priority::new(2));
+        assert_eq!(Priority::new(2).unwrap().name(), "high");
+        assert_eq!(Priority::new(3).unwrap().marks(), "!!!");
     }
 
     #[test]

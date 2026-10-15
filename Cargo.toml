@@ -12,9 +12,18 @@ license = "MIT OR Apache-2.0"
 ttask-core = { path = "crates/ttask-core" }
 ttask-store = { path = "crates/ttask-store" }
 ttask-app = { path = "crates/ttask-app" }
+ttask-tui = { path = "crates/ttask-tui" }
 
+age = "0.12.1"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "env"] }
+clap_complete = "4.6.11"
+csv = "1.4.0"
+jiff = { version = "0.2.38", features = ["serde"] }
+keyring = "4.2.0"
+notify-rust = "4.18.2"
+nucleo-matcher = "0.3.1"
+ratatui = "0.30.2"
 directories = "6.0.0"
 rpassword = "7.5.4"
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
@@ -22,6 +31,8 @@ secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+toml = "1.1.8"
+unicode-width = "0.2.2"
 ulid = "3.0.0"
 
 # dev

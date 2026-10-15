@@ -35,8 +35,11 @@ impl Env {
         let mut cmd = Command::cargo_bin("ttask").unwrap();
         cmd.arg("--db")
             .arg(self.db())
+            .env("TTASK_CONFIG", self.dir.path().join("config.toml"))
+            .env("NO_COLOR", "1")
             .env_remove("TTASK_DB")
-            .env_remove("TTASK_PASSWORD");
+            .env_remove("TTASK_PASSWORD")
+            .env_remove("TTASK_EXPORT_PASSPHRASE");
         cmd
     }
 
@@ -221,4 +224,463 @@ fn usage_errors_exit_with_code_1() {
     let env = Env::new();
     env.cmd().arg("frobnicate").assert().code(1);
     env.cmd().arg("--help").assert().success();
+}
+
+fn init_plain(env: &Env) {
+    env.cmd().arg("init").assert().success();
+}
+
+fn add_json(env: &Env, text: &str) -> Value {
+    let out = env.cmd().args(["--json", "add", text]).assert().success();
+    json(&out.get_output().stdout)
+}
+
+#[test]
+fn quick_add_edit_and_show() {
+    let env = Env::new();
+    init_plain(&env);
+    let task = add_json(
+        &env,
+        "Renew passport #admin +gov !high due:2026-11-30 every:year ~30m",
+    );
+    assert_eq!(task["project"], "admin");
+    assert_eq!(task["tags"][0], "gov");
+    assert_eq!(task["priority"], 2);
+    assert_eq!(task["due_date"], "2026-11-30");
+    assert_eq!(task["recur_rule"], "FREQ=YEARLY");
+    assert_eq!(task["estimate_min"], 30);
+
+    env.cmd()
+        .args([
+            "edit", "1", "-+gov", "+travel", "due:none", "New", "passport",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("New passport"));
+    env.cmd()
+        .args(["edit", "1", "--notes", "bring photos"])
+        .assert()
+        .success();
+
+    let out = env
+        .cmd()
+        .args(["--json", "show", "1", "--history"])
+        .assert()
+        .success();
+    let shown = json(&out.get_output().stdout);
+    assert_eq!(shown["detail"]["task"]["title"], "New passport");
+    assert_eq!(shown["detail"]["task"]["tags"][0], "travel");
+    assert_eq!(shown["detail"]["task"]["notes"], "bring photos");
+    assert!(shown["detail"]["task"]["due_date"].is_null());
+    let kinds: Vec<&str> = shown["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["created", "updated", "updated"]);
+
+    env.cmd()
+        .args(["show", "1", "--history"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bring photos"))
+        .stdout(predicate::str::contains("History"));
+}
+
+#[test]
+fn views_and_filters_from_the_command_line() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Inbox thing");
+    add_json(&env, "Work today #work due:today");
+    add_json(&env, "Work later #work due:+10d !urgent");
+    let titles = |args: &[&str]| -> Vec<String> {
+        let mut full = vec!["--json", "ls"];
+        full.extend_from_slice(args);
+        let out = env.cmd().args(&full).assert().success();
+        json(&out.get_output().stdout)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["title"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(titles(&["inbox"]), ["Inbox thing"]);
+    assert_eq!(titles(&["today"]), ["Work today"]);
+    assert_eq!(titles(&["#work", "and", "!>=2"]), ["Work later"]);
+    assert_eq!(
+        titles(&["#work", "--sort", "priority"]),
+        ["Work later", "Work today"]
+    );
+
+    env.cmd()
+        .args(["filter", "save", "Urgent", "!urgent"])
+        .assert()
+        .success();
+    assert_eq!(
+        titles(&["urgent"]),
+        ["Work later"],
+        "saved filters work as views"
+    );
+    env.cmd()
+        .args(["ls", "due:<=banana"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("banana"));
+}
+
+#[test]
+fn done_with_recurrence_undo_and_redo() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Water plants every!:3d due:today");
+    env.cmd()
+        .args(["done", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Completed task 1: Water plants (next: 2",
+        ));
+    env.cmd()
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Undid completed, spawned"));
+    env.cmd().arg("redo").assert().success();
+    env.cmd().arg("undo").assert().success();
+    env.cmd().arg("undo").assert().success();
+    env.cmd()
+        .arg("undo")
+        .assert()
+        .success()
+        .stdout("Nothing to undo\n");
+}
+
+#[test]
+fn projects_tags_checklist_search_block_timer() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Client call #work/acme +phone");
+    add_json(&env, "Prep slides #work");
+    env.cmd()
+        .args(["project", "ls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("work/acme"));
+    env.cmd()
+        .args(["project", "rename", "work/acme", "Initech"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["tag", "rename", "phone", "call"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["tags"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("+call"));
+
+    env.cmd()
+        .args(["checklist", "2", "add", "outline"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["checklist", "2", "add", "visuals"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["checklist", "2", "toggle", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1. [x] outline"));
+    env.cmd()
+        .args(["checklist", "2", "toggle", "9"])
+        .assert()
+        .code(2);
+
+    env.cmd()
+        .args(["search", "slid"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Prep slides"));
+
+    env.cmd()
+        .args(["block", "1", "--on", "2"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["ls", "is:blocked"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Client call"));
+    env.cmd().args(["block", "2", "--on", "1"]).assert().code(1);
+
+    env.cmd().args(["timer", "start", "2"]).assert().success();
+    env.cmd()
+        .args(["timer", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Timing 2: Prep slides"));
+    env.cmd().args(["timer", "stop"]).assert().success();
+}
+
+#[test]
+fn json_export_import_round_trip_and_dry_run() {
+    let src = Env::new();
+    init_plain(&src);
+    add_json(&src, "Exported #proj +tag due:2026-12-01");
+    add_json(&src, "Second");
+    let export = src.dir.path().join("out.json");
+    src.cmd()
+        .args(["export", "--format", "json", "--output"])
+        .arg(&export)
+        .assert()
+        .success();
+
+    let dst = Env::new();
+    init_plain(&dst);
+    dst.cmd()
+        .args(["import", "--dry-run"])
+        .arg(&export)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Would import: 2 new"));
+    dst.cmd()
+        .arg("import")
+        .arg(&export)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported: 2 new, 0 updated"));
+    dst.cmd()
+        .arg("import")
+        .arg(&export)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 new, 2 updated"));
+    dst.cmd()
+        .args(["ls", "#proj"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exported"));
+}
+
+#[test]
+fn other_formats_export_and_import() {
+    let src = Env::new();
+    init_plain(&src);
+    add_json(&src, "Formatted #proj +tag due:2026-12-01");
+    for (format, file) in [
+        ("csv", "out.csv"),
+        ("todotxt", "out.txt"),
+        ("markdown", "out.md"),
+    ] {
+        let path = src.dir.path().join(file);
+        src.cmd()
+            .args(["export", "--format", format, "--output"])
+            .arg(&path)
+            .assert()
+            .success();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Formatted"), "{format}: {text}");
+        if format == "markdown" {
+            continue;
+        }
+        let dst = Env::new();
+        init_plain(&dst);
+        dst.cmd().arg("import").arg(&path).assert().success();
+        let out = dst.cmd().args(["--json", "ls"]).assert().success();
+        let tasks = json(&out.get_output().stdout);
+        assert_eq!(tasks[0]["title"], "Formatted", "{format}");
+        assert_eq!(tasks[0]["project"], "proj", "{format}");
+        assert_eq!(tasks[0]["due_date"], "2026-12-01", "{format}");
+    }
+}
+
+#[test]
+fn todoist_csv_is_detected() {
+    let env = Env::new();
+    init_plain(&env);
+    let path = env.dir.path().join("Groceries.csv");
+    fs::write(
+        &path,
+        "TYPE,CONTENT,DESCRIPTION,PRIORITY,INDENT,AUTHOR,RESPONSIBLE,DATE,DATE_LANG,TIMEZONE\n\
+         task,Milk @shop,,4,1,,,,en,UTC\n",
+    )
+    .unwrap();
+    env.cmd().arg("import").arg(&path).assert().success();
+    env.cmd()
+        .args(["ls", "#Groceries", "+shop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Milk"));
+}
+
+#[test]
+fn encrypted_export_round_trips() {
+    let src = Env::new();
+    init_plain(&src);
+    add_json(&src, "Top secret");
+    let path = src.dir.path().join("backup.age");
+    src.cmd()
+        .args(["export", "--encrypt", "--output"])
+        .arg(&path)
+        .env("TTASK_EXPORT_PASSPHRASE", "an export passphrase")
+        .assert()
+        .success();
+    let bytes = fs::read(&path).unwrap();
+    assert!(bytes.starts_with(b"age-encryption.org/v1"));
+    assert!(!bytes.windows(10).any(|w| w == b"Top secret"));
+
+    let dst = Env::new();
+    init_plain(&dst);
+    dst.cmd()
+        .arg("import")
+        .arg(&path)
+        .env("TTASK_EXPORT_PASSPHRASE", "wrong passphrase!!")
+        .assert()
+        .failure();
+    dst.cmd()
+        .arg("import")
+        .arg(&path)
+        .env("TTASK_EXPORT_PASSPHRASE", "an export passphrase")
+        .assert()
+        .success();
+    dst.cmd()
+        .arg("ls")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Top secret"));
+}
+
+#[test]
+fn encrypt_change_password_and_decrypt() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Keep me");
+    env.cmd()
+        .args(["db", "encrypt"])
+        .env("TTASK_PASSWORD", PASSWORD)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Encrypted the database"));
+    assert!(
+        !fs::read(env.db())
+            .unwrap()
+            .starts_with(b"SQLite format 3\0")
+    );
+    env.cmd_with_password(PASSWORD)
+        .arg("ls")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Keep me"));
+
+    let new_password = "a brand new password";
+    env.cmd_with_password(PASSWORD)
+        .args(["db", "passwd"])
+        .env("TTASK_PASSWORD", new_password)
+        .assert()
+        .success();
+    env.cmd_with_password(PASSWORD).arg("ls").assert().code(3);
+    env.cmd_with_password(new_password)
+        .args(["db", "decrypt"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--yes"));
+    env.cmd_with_password(new_password)
+        .args(["db", "decrypt", "--yes"])
+        .assert()
+        .success();
+    assert!(
+        fs::read(env.db())
+            .unwrap()
+            .starts_with(b"SQLite format 3\0")
+    );
+    env.cmd()
+        .args(["db", "gc-backups"])
+        .assert()
+        .success()
+        .stdout("Removed the .bak copy\n");
+    env.cmd()
+        .args(["db", "encrypt"])
+        .env("TTASK_PASSWORD", "short")
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn backups_check_info_gc() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Something");
+    let backups = env.dir.path().join("backups");
+    let rotated = fs::read_dir(&backups).unwrap().count();
+    assert_eq!(rotated, 2, "daily and weekly rotation on first open");
+    env.cmd()
+        .args(["db", "backup"])
+        .arg(env.dir.path().join("manual.db"))
+        .assert()
+        .success();
+    assert!(env.dir.path().join("manual.db").exists());
+    env.cmd()
+        .args(["db", "check"])
+        .assert()
+        .success()
+        .stdout("Database OK\n");
+    let out = env.cmd().args(["--json", "db", "info"]).assert().success();
+    let info = json(&out.get_output().stdout);
+    assert_eq!(info["mode"], "plain");
+    assert_eq!(info["open_tasks"], 1);
+    env.cmd()
+        .arg("gc")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Purged 0 task(s)"));
+}
+
+#[test]
+fn config_file_is_honoured() {
+    let env = Env::new();
+    let config = env.dir.path().join("config.toml");
+    env.cmd().args(["config", "init"]).assert().success();
+    assert!(fs::read_to_string(&config).unwrap().contains("[security]"));
+    fs::write(&config, "[database]\nbackups = { daily = 0, weekly = 0 }\n").unwrap();
+    init_plain(&env);
+    add_json(&env, "No backups");
+    assert!(!env.dir.path().join("backups").exists());
+    fs::write(&config, "[ui]\ncolour = true\n").unwrap();
+    env.cmd()
+        .arg("ls")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("config"));
+}
+
+#[test]
+fn completions_and_reminder_listing() {
+    let env = Env::new();
+    env.cmd()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ttask"));
+    init_plain(&env);
+    add_json(&env, "Dentist due:2099-01-01@10:00 remind:due-1h");
+    env.cmd()
+        .arg("remind")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("09:00").and(predicate::str::contains("Dentist")));
+    env.cmd().args(["remind", "--run"]).assert().success();
+}
+
+#[test]
+fn tui_refuses_without_a_terminal() {
+    let env = Env::new();
+    init_plain(&env);
+    env.cmd()
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("needs a terminal"));
 }

@@ -7,5 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+jiff.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 ulid.workspace = true

@@ -2,7 +2,7 @@
 
 2026-10-15 · Sebastian
 
-> Source of truth: <https://claude.ai/code/artifact/f6233bfd-b98c-4e88-aad4-8992eb6abb6d> (synced at rev 16; diagrams redrawn as Mermaid).
+> Source of truth: <https://claude.ai/code/artifact/f6233bfd-b98c-4e88-aad4-8992eb6abb6d> (synced at rev 17; diagrams redrawn as Mermaid).
 
 ## Overview
 
@@ -302,6 +302,7 @@ Conversions always write to `<name>.tmp`, `fsync`, then rename over the original
 | Malware running as the same user while ttask is unlocked | No | Out of scope for any local app |
 | Weak or reused password | No | `init` enforces a minimum of 10 characters and shows a strength estimate |
 | File size and modification time | Leaked | Metadata is not hidden |
+| Notes open in `$EDITOR` | Briefly exposed | Written to a temp file while the editor runs, then deleted |
 
 A forgotten password is unrecoverable by design; `init --encrypt` says so before asking for the password, and recommends storing it in a password manager.
 
@@ -507,6 +508,26 @@ Recurrence and date tests pin the clock and time zone (injected `Clock` trait), 
 - Release binaries are built with LTO and `strip`, target size under 10 MB.
 - Licensing: ttask under MIT or Apache-2.0; SQLCipher (BSD-style) and OpenSSL (Apache-2.0) notices ship in `THIRD_PARTY_LICENSES`.
 - Semantic versioning; a schema change bumps the minor version and is listed in the changelog.
+
+## Implementation notes
+
+Status 2026-10-15: M0–M3 are implemented. Where the build differs from or sharpens the design above:
+
+| Area | As built | Why |
+| --- | --- | --- |
+| Recurrence (`due` mode) | Next due = first occurrence after the old due date **that is also after today** | Missed occurrences collapse into one; a late daily task is next due tomorrow, not today |
+| Completing a parent | Also completes its open subtasks (one undo step) | Matches how checklists of steps are used |
+| Undo journal | `events` keeps full task snapshots; `task_id` has no foreign key | Undoing a creation deletes the row, and redo needs its history |
+| Imports | One undoable batch matched on `uid`; history imported as batch 0 (shown, never undone) | `ttask undo` reverts a whole import |
+| CSV column mapping | Auto-detected headers plus `--map field=Column` | Non-interactive replacement for a mapping prompt |
+| `TTASK_PASSWORD` | Always prints a warning (no `--i-know` flag) | Simpler; scripts should prefer `--password-file` |
+| Password sources | `--password-file` alone, else `password_cmd` → keychain → env → prompt; a stale keychain entry is dropped | Scripts fail fast; interactive use falls through |
+| Keychain on Linux | Secret Service via `keyring` (pure Rust, no D-Bus build dependency) | Persistent across sessions |
+| Reminders on Windows | Task Scheduler runs `conhost.exe --headless ttask remind --run` | Avoids a console flash every 5 minutes |
+| `$EDITOR` handoff | Notes and the edit form sit in a temporary plaintext file while the editor runs, deleted afterwards | Even for encrypted databases; documented in the threat model |
+| Encrypted export | `export --encrypt` writes an age (scrypt passphrase) file; `import` decrypts it | `TTASK_EXPORT_PASSPHRASE` for scripts |
+| TUI extra keys | `X` cancel, `M` modify with tokens, `c` checklist item, `Space` mark/toggle item, `s` skip, `T` timer, `S` save filter, `D` delete | Covers every CLI action from the keyboard |
+| CLI arguments | `edit` accepts `-+tag` tokens, so its flags go before the changes; `ls` uses `not +tag` instead of `-+tag` | Keeps `--flags` usable after positional text |
 
 ## Roadmap and decisions
 

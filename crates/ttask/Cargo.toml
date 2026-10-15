@@ -10,12 +10,22 @@ license.workspace = true
 ttask-app.workspace = true
 ttask-core.workspace = true
 ttask-store.workspace = true
+ttask-tui.workspace = true
+age.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 directories.workspace = true
+notify-rust.workspace = true
 rpassword.workspace = true
 secrecy.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+
+[target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
+# Default features: Windows Credential Manager, macOS Keychain, Secret Service.
+keyring.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
