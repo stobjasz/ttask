@@ -1,0 +1,4 @@
+# The vendored OpenSSL static libs ship without PDBs; MSVC warns once per
+# object (LNK4099). Harmless, so silence that one warning on MSVC only.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "link-arg=/IGNORE:4099"]

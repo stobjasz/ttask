@@ -1,0 +1,15 @@
+[package]
+name = "ttask-app"
+description = "Application services for ttask; one transaction per user action."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ttask-core.workspace = true
+ttask-store.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

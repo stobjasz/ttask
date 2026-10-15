@@ -1,0 +1,24 @@
+[package]
+name = "ttask"
+description = "A keyboard-driven personal task tracker for the terminal, backed by plain or encrypted SQLite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ttask-app.workspace = true
+ttask-core.workspace = true
+ttask-store.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true
+rpassword.workspace = true
+secrecy.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
