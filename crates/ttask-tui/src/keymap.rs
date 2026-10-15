@@ -318,7 +318,8 @@ impl Keymap {
         self.lookup.get(&Chord::from_event(key)).copied()
     }
 
-    /// Keys bound to `action`, for help and hints (`j/↓`).
+    /// Keys bound to `action`, for help and hints (`↓, j`). Not joined with
+    /// `/`, which is itself a key.
     pub fn keys_for(&self, action: Action) -> String {
         let keys: Vec<String> = self
             .bindings
@@ -326,7 +327,16 @@ impl Keymap {
             .filter(|(_, a)| *a == action)
             .map(|(c, _)| c.display())
             .collect();
-        keys.join("/")
+        keys.join(", ")
+    }
+
+    /// The first key bound to `action`, for the footer hints.
+    pub fn first_key(&self, action: Action) -> String {
+        self.bindings
+            .iter()
+            .find(|(_, a)| *a == action)
+            .map(|(c, _)| c.display())
+            .unwrap_or_default()
     }
 }
 

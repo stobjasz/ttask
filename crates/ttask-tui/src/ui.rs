@@ -605,8 +605,7 @@ fn draw_footer(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
                 if i > 0 {
                     spans.push(Span::styled(" · ", t.dim));
                 }
-                let keys = tui.keymap.keys_for(*action);
-                let key = keys.split('/').next().unwrap_or("").to_owned();
+                let key = tui.keymap.first_key(*action);
                 spans.push(Span::styled(key, t.accent));
                 spans.push(Span::styled(format!(" {name}"), t.dim));
             }

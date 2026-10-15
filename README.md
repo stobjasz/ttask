@@ -4,19 +4,20 @@ A keyboard-driven personal task tracker for the terminal. Tasks live in one
 local SQLite file, plain or encrypted with a password (SQLCipher). Nothing
 leaves your machine unless you export it.
 
-Design: [DESIGN.md](DESIGN.md).
+User guide: [docs/USER_GUIDE.md](docs/USER_GUIDE.md) · Design: [DESIGN.md](DESIGN.md).
 
 ## Quick start
 
 ```sh
 ttask init                  # or: ttask init --encrypt
-ttask add Pay rent #home +bills !high due:fri every:month remind:due-1h
+ttask add 'Pay rent #home +bills !high due:fri every:month remind:due-1h'
 ttask                       # full-screen TUI
 ```
 
 ## Quick-add syntax
 
-Used by `ttask add`, the TUI `a` prompt, and `ttask edit` (where `none`
+Single-quote quick-add text on the command line: shells treat `#word` as a
+comment and `!word` as history expansion. Used by `ttask add`, the TUI `a` prompt, and `ttask edit` (where `none`
 clears a field and `-+tag` removes a tag).
 
 | Token | Meaning |
@@ -38,7 +39,7 @@ ttask ls                    # open tasks; views: inbox today upcoming overdue al
 ttask ls '#work and (due:<=today or !>=2) and not +someday'
 ttask ls today --json       # every read command speaks JSON
 ttask show 12 --history
-ttask edit 12 due:+3d -+later !urgent New title
+ttask edit 12 'due:+3d -+later !urgent New title'
 ttask edit 12               # $EDITOR on a TOML form
 ttask done 12 13            # recurring tasks spawn their next instance
 ttask reopen | cancel | rm | skip <ids>

@@ -6,6 +6,10 @@
 use std::fs;
 use std::io::{self, Write};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+/// An editor that returns faster than this without changes did not wait.
+const INSTANT_RETURN: Duration = Duration::from_secs(1);
 
 /// `$VISUAL`, then `$EDITOR`, then `notepad` on Windows or `vi` elsewhere.
 /// The value may carry arguments (`code --wait`).
@@ -62,6 +66,7 @@ pub fn edit_text(initial: &str, suffix: &str) -> io::Result<String> {
     let (program, args) = command
         .split_first()
         .ok_or_else(|| io::Error::other("no editor configured"))?;
+    let started = Instant::now();
     let status = Command::new(program)
         .args(args)
         .arg(&path)
@@ -76,8 +81,16 @@ pub fn edit_text(initial: &str, suffix: &str) -> io::Result<String> {
             "editor `{program}` exited with {status}"
         )));
     }
-    let text = fs::read_to_string(&path)?;
-    Ok(text.replace("\r\n", "\n"))
+    let text = fs::read_to_string(&path)?.replace("\r\n", "\n");
+    // Some editors (Windows 11 Notepad, `code` without --wait) hand off to
+    // another process and return at once, so the edit would be lost.
+    if text == initial.replace("\r\n", "\n") && started.elapsed() < INSTANT_RETURN {
+        return Err(io::Error::other(format!(
+            "the editor `{program}` returned immediately, before any edit; set EDITOR to a \
+             command that waits until you close the file, e.g. `code --wait` or `notepad++ -multiInst -nosession`"
+        )));
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

@@ -52,6 +52,10 @@ fn starts_on_today_and_renders_empty_state() {
     assert!(screen.contains("ttask"));
     assert!(screen.contains("Nothing here"));
     assert!(screen.contains("Inbox"));
+    assert!(
+        screen.contains("/ filter"),
+        "footer shows the / key: {screen}"
+    );
 }
 
 #[test]
