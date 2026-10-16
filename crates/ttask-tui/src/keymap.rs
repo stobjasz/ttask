@@ -73,6 +73,9 @@ pub enum Action {
     Earlier,
     Focus,
     SaveTemplate,
+    Duplicate,
+    TimeLog,
+    Snooze,
     Help,
     Quit,
     Back,
@@ -156,6 +159,17 @@ impl Action {
             Action::SaveTemplate,
             "save_template",
             "Save task as template",
+        ),
+        (Action::Duplicate, "duplicate", "Duplicate task"),
+        (
+            Action::TimeLog,
+            "time_log",
+            "Time log: log, edit, remove time",
+        ),
+        (
+            Action::Snooze,
+            "snooze",
+            "Snooze the last reminder / remind me",
         ),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
@@ -357,6 +371,9 @@ impl Keymap {
         bind(&["<"], Action::Earlier);
         bind(&["F"], Action::Focus);
         bind(&["ctrl-t"], Action::SaveTemplate);
+        bind(&["p"], Action::Duplicate);
+        bind(&["i"], Action::TimeLog);
+        bind(&["z"], Action::Snooze);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);

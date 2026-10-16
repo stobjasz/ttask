@@ -21,6 +21,24 @@ pub struct Config {
     pub focus: ttask_tui::FocusSettings,
     /// Commands run after tasks are added, changed, completed or deleted.
     pub hooks: ttask_app::HookConfig,
+    /// A text file whose lines become tasks.
+    pub capture: CaptureConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CaptureConfig {
+    /// One quick-add line per task; ttask empties it after reading.
+    pub file: Option<String>,
+}
+
+impl CaptureConfig {
+    pub fn path(&self) -> Option<PathBuf> {
+        self.file
+            .as_deref()
+            .filter(|f| !f.trim().is_empty())
+            .map(expand)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -177,6 +195,10 @@ pub const EXAMPLE: &str = r#"# ttask configuration. Every key is optional.
 # on_complete = ""
 # on_delete = ""
 # timeout_seconds = 10
+
+[capture]                      # a plain-text inbox, e.g. in a folder your phone syncs
+# file = "~/Sync/ttask-inbox.txt"   # one quick-add line per task; read by the TUI,
+                                    # `ttask capture` and `ttask remind --run`, then emptied
 "#;
 
 #[cfg(test)]

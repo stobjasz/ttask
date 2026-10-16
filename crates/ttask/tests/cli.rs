@@ -1056,3 +1056,262 @@ fn templates_from_the_command_line_survive_export() {
         .stdout(predicate::str::contains("release"));
     env.cmd().args(["template", "use", "nope"]).assert().code(2);
 }
+
+#[test]
+fn edit_by_filter_is_one_undo_step() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Old one +old");
+    add_json(&env, "Old two +old");
+    add_json(&env, "Keep me");
+    env.cmd()
+        .args(["edit", "--filter", "+old", "+archive"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--yes"));
+    env.cmd()
+        .args([
+            "edit", "--filter", "+old", "--yes", "--", "-+old", "+archive", "!high",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated 2 tasks"));
+    let out = env
+        .cmd()
+        .args(["--json", "ls", "+archive"])
+        .assert()
+        .success();
+    let tasks = json(&out.get_output().stdout);
+    assert_eq!(tasks.as_array().unwrap().len(), 2);
+    assert_eq!(tasks[0]["tags"][0], "archive");
+    assert_eq!(tasks[0]["priority"], 2);
+    env.cmd().arg("undo").assert().success();
+    let out = env.cmd().args(["--json", "ls", "+old"]).assert().success();
+    assert_eq!(json(&out.get_output().stdout).as_array().unwrap().len(), 2);
+    env.cmd()
+        .args(["edit", "--filter", "+old", "-y"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to change"));
+    env.cmd()
+        .args(["edit", "--filter", "+old", "--notes", "x", "+y"])
+        .assert()
+        .failure();
+    env.cmd()
+        .args(["edit", "word", "+tag"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a task id"));
+}
+
+#[test]
+fn dup_copies_and_applies_changes() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Weekly report #work ~1h due:fri");
+    let out = env
+        .cmd()
+        .args(["--json", "dup", "1", "due:+8d", "!high"])
+        .assert()
+        .success();
+    let copies = json(&out.get_output().stdout);
+    assert_eq!(copies[0]["id"], 2);
+    assert_eq!(copies[0]["title"], "Weekly report");
+    assert_eq!(copies[0]["project"], "work");
+    assert_eq!(copies[0]["estimate_min"], 60);
+    assert_eq!(copies[0]["priority"], 2);
+    env.cmd()
+        .args(["duplicate", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Copied as"));
+}
+
+#[test]
+fn timer_log_ls_edit_rm() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Write docs ~2h");
+    let out = env
+        .cmd()
+        .args(["--json", "timer", "log", "1", "45m"])
+        .assert()
+        .success();
+    let entry = json(&out.get_output().stdout);
+    let id = entry["id"].as_i64().unwrap().to_string();
+    let ms = |e: &Value| e["ended_at"].as_i64().unwrap() - e["started_at"].as_i64().unwrap();
+    assert_eq!(ms(&entry), 45 * 60_000);
+    env.cmd()
+        .args(["timer", "log", "1", "1h", "tom@9am"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("future"));
+    env.cmd()
+        .args(["timer", "ls", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(45m)"))
+        .stdout(predicate::str::contains("1 entry, 45m in total"));
+    env.cmd()
+        .args(["timer", "ls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Write docs"));
+    let out = env
+        .cmd()
+        .args(["--json", "timer", "edit", &id, "30m"])
+        .assert()
+        .success();
+    // A new length keeps the start.
+    let edited = json(&out.get_output().stdout);
+    assert_eq!(ms(&edited), 30 * 60_000);
+    assert_eq!(edited["started_at"], entry["started_at"]);
+    env.cmd()
+        .args(["timer", "edit", &id, "1h"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("future"));
+    env.cmd()
+        .args(["show", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Time log"))
+        .stdout(predicate::str::contains("(30m)"));
+    env.cmd().args(["timer", "rm", &id]).assert().success();
+    env.cmd()
+        .args(["timer", "ls", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No time logged"));
+    env.cmd().arg("undo").assert().success();
+    env.cmd()
+        .args(["timer", "ls", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(30m)"));
+    env.cmd()
+        .args(["timer", "edit", "999", "5m"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn ls_reports_planned_time_on_stderr() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "A ~1h due:today");
+    add_json(&env, "B ~30m due:today");
+    env.cmd()
+        .args(["ls", "today"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("estimated").not())
+        .stderr(predicate::str::contains("2 open tasks, ~1h30m estimated"));
+}
+
+#[test]
+fn report_shows_estimates_vs_tracked() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Task ~1h");
+    env.cmd()
+        .args(["timer", "log", "1", "1h30m"])
+        .assert()
+        .success();
+    env.cmd().args(["done", "1"]).assert().success();
+    env.cmd()
+        .args(["report", "--weeks", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Estimates vs tracked"))
+        .stdout(predicate::str::contains("50% over"));
+}
+
+#[test]
+fn remind_snooze_by_id_and_recent() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Call back");
+    env.cmd()
+        .args(["remind", "snooze", "1", "2h"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Snoozed 1: Call back until"));
+    let out = env.cmd().args(["--json", "remind"]).assert().success();
+    assert_eq!(json(&out.get_output().stdout).as_array().unwrap().len(), 1);
+    env.cmd().arg("undo").assert().success();
+    let out = env.cmd().args(["--json", "remind"]).assert().success();
+    assert!(
+        json(&out.get_output().stdout)
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Nothing fired recently, so a bare snooze has nothing to act on.
+    env.cmd()
+        .args(["remind", "snooze"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no reminder fired"));
+    env.cmd()
+        .args(["remind", "snooze", "1", "whenever"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn capture_reads_and_empties_the_inbox_file() {
+    let env = Env::new();
+    init_plain(&env);
+    let inbox = env.dir.path().join("inbox.txt");
+    fs::write(
+        env.dir.path().join("config.toml"),
+        format!(
+            "[capture]\nfile = '{}'\n",
+            inbox.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    env.cmd()
+        .arg("capture")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Nothing to capture"));
+    fs::write(&inbox, "- Buy milk +shop\nCall Bob due:tom\n").unwrap();
+    env.cmd()
+        .arg("capture")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Captured"))
+        .stdout(predicate::str::contains("Buy milk"));
+    assert_eq!(fs::read_to_string(&inbox).unwrap(), "");
+    let out = env.cmd().args(["--json", "ls", "inbox"]).assert().success();
+    assert_eq!(json(&out.get_output().stdout).as_array().unwrap().len(), 2);
+    // The scheduled reminder run picks the inbox up too.
+    fs::write(&inbox, "Third one\n").unwrap();
+    env.cmd()
+        .args(["remind", "--run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Third one"));
+    // An explicit file overrides the config.
+    let other = env.dir.path().join("other.txt");
+    fs::write(&other, "From elsewhere\n").unwrap();
+    env.cmd()
+        .arg("capture")
+        .arg(&other)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("From elsewhere"));
+}
+
+#[test]
+fn capture_without_a_file_explains_the_config() {
+    let env = Env::new();
+    init_plain(&env);
+    env.cmd()
+        .arg("capture")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[capture]"));
+}

@@ -133,6 +133,29 @@ impl NewTask {
     }
 }
 
+/// The same task again, open, in the same recurrence series.
+impl From<&Task> for NewTask {
+    fn from(t: &Task) -> NewTask {
+        NewTask {
+            title: t.title.clone(),
+            notes: t.notes.clone(),
+            priority: t.priority,
+            project_id: t.project_id,
+            parent_id: t.parent_id,
+            due_date: t.due_date,
+            due_time: t.due_time,
+            scheduled_date: t.scheduled_date,
+            estimate_min: t.estimate_min,
+            recur_rule: t.recur_rule.clone(),
+            recur_mode: t.recur_mode,
+            recur_series: t.recur_series.clone(),
+            wait_until: t.wait_until,
+            someday: t.someday,
+            tags: t.tags.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct Progress {
     pub done: u32,

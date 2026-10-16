@@ -47,6 +47,11 @@ pub struct TaskSnapshot {
     pub checklist: Vec<SnapshotChecklistItem>,
     pub reminders: Vec<SnapshotReminder>,
     pub blockers: Vec<TaskId>,
+    /// Older journals have none; undo and redo only touch the entries that
+    /// differ between the two sides, so timer starts and stops (which are
+    /// not journaled) survive an unrelated undo.
+    #[serde(default)]
+    pub time_entries: Vec<SnapshotTimeEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,6 +65,13 @@ pub struct SnapshotChecklistItem {
 pub struct SnapshotReminder {
     pub fire_at: i64,
     pub fired_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotTimeEntry {
+    pub id: i64,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -145,6 +157,7 @@ impl Db<'_> {
                         checklist: Vec::new(),
                         reminders: Vec::new(),
                         blockers: Vec::new(),
+                        time_entries: Vec::new(),
                     })
                 },
             )
@@ -189,11 +202,25 @@ impl Db<'_> {
             .prepare("SELECT blocker_id FROM task_deps WHERE blocked_id = ?1 ORDER BY blocker_id")?
             .query_map([id], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
+        snap.time_entries = self
+            .conn
+            .prepare(
+                "SELECT id, started_at, ended_at FROM time_entries WHERE task_id = ?1 ORDER BY id",
+            )?
+            .query_map([id], |r| {
+                Ok(SnapshotTimeEntry {
+                    id: r.get(0)?,
+                    started_at: r.get(1)?,
+                    ended_at: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
         Ok(Some(snap))
     }
 
     /// Writes a snapshot back: updates the row (or recreates it with the same
-    /// id) and replaces its tags, checklist, reminders and blockers.
+    /// id) and replaces its tags, checklist, reminders and blockers. Time
+    /// entries are left alone (see [`TaskSnapshot::time_entries`]).
     pub fn restore(&self, s: &TaskSnapshot) -> Result<()> {
         let exists: bool = self.conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1)",
@@ -372,13 +399,54 @@ impl Db<'_> {
     /// exist then, so the row named by `other` is removed.
     fn apply(&self, target: Option<&str>, other: Option<&str>) -> Result<()> {
         match (target, other) {
-            (Some(json), _) => self.restore(&serde_json::from_str(json)?),
+            (Some(json), other) => {
+                let snap: TaskSnapshot = serde_json::from_str(json)?;
+                self.restore(&snap)?;
+                let from = match other {
+                    Some(o) => serde_json::from_str::<TaskSnapshot>(o)?.time_entries,
+                    None => Vec::new(),
+                };
+                self.apply_time_entries(snap.id, &from, &snap.time_entries)
+            }
             (None, Some(json)) => {
                 let snap: TaskSnapshot = serde_json::from_str(json)?;
                 self.hard_delete_task(snap.id)
             }
             (None, None) => Ok(()),
         }
+    }
+
+    /// Turns the task's entries `from` into `to`, touching only those that
+    /// differ, so entries neither side knows about stay as they are.
+    fn apply_time_entries(
+        &self,
+        task: TaskId,
+        from: &[SnapshotTimeEntry],
+        to: &[SnapshotTimeEntry],
+    ) -> Result<()> {
+        for gone in from.iter().filter(|e| !to.iter().any(|t| t.id == e.id)) {
+            self.conn.execute(
+                "DELETE FROM time_entries WHERE id = ?1 AND task_id = ?2",
+                params![gone.id, task],
+            )?;
+        }
+        for entry in to.iter().filter(|e| !from.contains(e)) {
+            let updated = self.conn.execute(
+                "UPDATE time_entries SET started_at = ?3, ended_at = ?4
+                  WHERE id = ?1 AND task_id = ?2",
+                params![entry.id, task, entry.started_at, entry.ended_at],
+            )?;
+            if updated == 0 {
+                // Keep the id unless another task's entry took it meanwhile.
+                self.conn.execute(
+                    "INSERT INTO time_entries (id, task_id, started_at, ended_at)
+                     VALUES ((SELECT CASE WHEN EXISTS (SELECT 1 FROM time_entries WHERE id = ?1)
+                                  THEN NULL ELSE ?1 END), ?2, ?3, ?4)",
+                    params![entry.id, task, entry.started_at, entry.ended_at],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// The task's events, oldest first, with the fields each one changed.

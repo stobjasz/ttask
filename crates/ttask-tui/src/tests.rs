@@ -1112,3 +1112,154 @@ fn mouse_picks_agenda_cells() {
     assert_eq!(tui.agenda.as_ref().unwrap().day, 0);
     assert_eq!(tui.selected_task().unwrap().title, "Monday two");
 }
+
+#[test]
+fn duplicate_prompt_copies_with_changes() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Report ~1h due:today");
+    press(&mut tui, "p");
+    assert!(matches!(
+        &tui.mode,
+        Mode::Prompt(p) if matches!(p.kind, crate::state::PromptKind::Duplicate(_))
+    ));
+    press(&mut tui, "!high");
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(tui.mode, Mode::Normal));
+    assert_eq!(titles(&tui), ["Report", "Report"]);
+    assert!(tui.status.as_ref().unwrap().text.starts_with("Copied as"));
+    assert_eq!(
+        tui.selected_task().unwrap().priority.name(),
+        "high",
+        "the copy is selected"
+    );
+    press(&mut tui, "u");
+    assert_eq!(titles(&tui), ["Report"]);
+}
+
+#[test]
+fn time_log_popup_logs_edits_and_removes() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Write docs due:today");
+    press(&mut tui, "i");
+    assert!(matches!(tui.mode, Mode::TimeLog { .. }));
+    let screen = render_to_string(&mut tui, 100, 30);
+    assert!(screen.contains("Nothing logged yet"), "{screen}");
+    press(&mut tui, "a");
+    press(&mut tui, "45m");
+    key(&mut tui, KeyCode::Enter);
+    let Mode::TimeLog { entries, .. } = &tui.mode else {
+        panic!("back in the popup");
+    };
+    assert_eq!(entries.len(), 1);
+    let screen = render_to_string(&mut tui, 100, 30);
+    assert!(screen.contains("11:15–12:00 (45m)"), "{screen}");
+    // Edit: the prompt starts with the entry as it is.
+    press(&mut tui, "e");
+    let Mode::Prompt(prompt) = &tui.mode else {
+        panic!("edit prompt");
+    };
+    assert_eq!(prompt.input.text(), "45m 2026-10-15@11:15");
+    ctrl(&mut tui, 'u');
+    press(&mut tui, "30m");
+    key(&mut tui, KeyCode::Enter);
+    let Mode::TimeLog { entries, .. } = &tui.mode else {
+        panic!("back in the popup");
+    };
+    assert_eq!(entries[0].minutes(tui.app.now_ms()), 30);
+    press(&mut tui, "d");
+    let Mode::TimeLog { entries, .. } = &tui.mode else {
+        panic!("still in the popup");
+    };
+    assert!(entries.is_empty());
+    press(&mut tui, "u");
+    let Mode::TimeLog { entries, .. } = &tui.mode else {
+        panic!("still in the popup");
+    };
+    assert_eq!(entries.len(), 1, "undo works inside the popup");
+    // A bad spec keeps the prompt open with an error; Esc returns to the popup.
+    press(&mut tui, "a");
+    press(&mut tui, "soon");
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(&tui.mode, Mode::Prompt(p) if p.error.is_some()));
+    key(&mut tui, KeyCode::Esc);
+    assert!(matches!(tui.mode, Mode::TimeLog { .. }));
+    key(&mut tui, KeyCode::Esc);
+    assert!(matches!(tui.mode, Mode::Normal));
+}
+
+#[test]
+fn reminder_banner_offers_snooze() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Stand-up due:today remind:11:00");
+    add(&mut tui, "Other due:today");
+    tui.tick(std::time::Instant::now());
+    let status = tui.status.clone().unwrap();
+    assert!(status.text.contains("z snoozes"), "{}", status.text);
+    // The other task is selected, but z snoozes the reminder's task.
+    press(&mut tui, "j");
+    press(&mut tui, "z");
+    let Mode::Prompt(prompt) = &tui.mode else {
+        panic!("snooze prompt");
+    };
+    let crate::state::PromptKind::Snooze(ids) = &prompt.kind else {
+        panic!("snooze prompt");
+    };
+    let stand_up = tui
+        .app
+        .list("Stand-up", "", ttask_store::TaskSort::Smart)
+        .unwrap()[0]
+        .id;
+    assert_eq!(ids, &[stand_up]);
+    assert_eq!(prompt.input.text(), "15m");
+    key(&mut tui, KeyCode::Enter);
+    assert!(
+        tui.status.as_ref().unwrap().text.contains("at 12:15"),
+        "{:?}",
+        tui.status
+    );
+    let reminders = tui.app.detail(stand_up).unwrap().reminders;
+    assert!(reminders.iter().any(|r| r.fired_at.is_none()));
+}
+
+#[test]
+fn capture_file_is_read_on_tick() {
+    let dir = TempDir::new().unwrap();
+    let inbox = dir.path().join("inbox.txt");
+    std::fs::write(&inbox, "- Buy milk +shop\n").unwrap();
+    let store = Store::create(&dir.path().join("t.db"), None).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let settings = Settings {
+        capture_file: Some(inbox.clone()),
+        ..Settings::default()
+    };
+    let mut tui = Tui::new(app, settings).unwrap();
+    tui.tick(std::time::Instant::now());
+    assert!(
+        tui.status
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("Captured 1 task"),
+        "{:?}",
+        tui.status
+    );
+    assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "");
+    assert_eq!(tui.app.view_count(&ttask_app::View::inbox()).unwrap(), 1);
+}
+
+#[test]
+fn planned_time_in_header_and_agenda() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "A ~1h due:today");
+    add(&mut tui, "B ~30m due:today");
+    let screen = render_to_string(&mut tui, 120, 30);
+    assert!(screen.contains("~1h30m planned"), "{screen}");
+    tui.open_view(ttask_app::View::agenda());
+    let screen = render_to_string(&mut tui, 160, 30);
+    assert!(screen.contains("Thu 15 ~1h30m"), "{screen}");
+    assert!(!screen.contains("planned"), "{screen}");
+}

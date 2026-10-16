@@ -901,3 +901,255 @@ fn failing_hooks_warn_but_do_not_undo_the_change() {
     app.undo().unwrap();
     assert_eq!(app.task(task.id).unwrap().title, "Still saved");
 }
+
+// ------------------------------------------------------------- time log
+
+const HOUR_MS: i64 = 3_600_000;
+
+#[test]
+fn logged_time_counts_and_undo_removes_only_that_entry() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("Write report", None, None).unwrap();
+    let logged = app.log_time(task.id, "45m").unwrap();
+    assert_eq!(logged.ended_at, Some(app.now_ms()));
+    assert_eq!(logged.minutes(app.now_ms()), 45);
+    // The timer is not journaled; it must survive undoing the log.
+    app.start_timer(task.id).unwrap();
+    app.undo().unwrap();
+    let entries = app.time_entries(task.id).unwrap();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].ended_at, None, "the running timer stays");
+    app.redo().unwrap();
+    assert_eq!(app.time_entries(task.id).unwrap().len(), 2);
+    assert_eq!(app.detail(task.id).unwrap().tracked_minutes, 45);
+    let history = app.history(task.id).unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|h| h.changed.contains(&"time_entries".to_owned())),
+        "{history:?}"
+    );
+}
+
+#[test]
+fn unrelated_undo_keeps_timer_entries() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("Deep work", None, None).unwrap();
+    app.edit(&[task.id], "!high").unwrap();
+    app.start_timer(task.id).unwrap();
+    app.stop_timer().unwrap();
+    app.undo().unwrap(); // the priority change
+    assert_eq!(app.time_entries(task.id).unwrap().len(), 1);
+}
+
+#[test]
+fn time_entries_can_be_edited_and_removed() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("Meeting", None, None).unwrap();
+    let entry = app.log_time(task.id, "2h").unwrap();
+    // Noon UTC is "now"; move it to 9:00 and shorten it.
+    let edited = app.edit_time_entry(entry.id, "30m 9:00").unwrap();
+    assert_eq!(edited.ended_at.unwrap() - edited.started_at, HOUR_MS / 2);
+    assert_eq!(app.now_ms() - edited.started_at, 3 * HOUR_MS);
+    assert!(
+        app.edit_time_entry(entry.id, "1h 11:30").is_err(),
+        "ends in the future"
+    );
+    app.undo().unwrap();
+    let back = app.time_entries(task.id).unwrap();
+    assert_eq!(back[0].ended_at.unwrap() - back[0].started_at, 2 * HOUR_MS);
+    let removed = app.remove_time_entries(&[entry.id]).unwrap();
+    assert_eq!(removed[0].id, entry.id);
+    assert!(app.time_entries(task.id).unwrap().is_empty());
+    app.undo().unwrap();
+    assert_eq!(
+        app.time_entries(task.id).unwrap()[0].id,
+        entry.id,
+        "same id"
+    );
+    let log = app.time_log(7).unwrap();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].1.title, "Meeting");
+}
+
+#[test]
+fn report_compares_estimates_with_tracked_time() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let a = app.add("Estimate me ~1h", None, None).unwrap();
+    let b = app.add("And me ~30m", None, None).unwrap();
+    app.add("Not tracked ~2h", None, None).unwrap();
+    app.log_time(a.id, "1h30m").unwrap();
+    app.log_time(b.id, "30m").unwrap();
+    app.complete(&[a.id, b.id]).unwrap();
+    let report = app.report(2).unwrap();
+    let week = report.estimates.last().unwrap();
+    assert_eq!((week.tasks, week.estimated, week.tracked), (2, 90, 120));
+    assert_eq!(week.deviation(), Some(33));
+    assert!(report.to_lines(10).iter().any(|l| l.contains("33% over")));
+    assert_eq!(report.estimates[0].tasks, 0);
+}
+
+#[test]
+fn planned_minutes_sums_open_estimates() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.add("A ~1h due:today", None, None).unwrap();
+    app.add("B ~30m due:today", None, None).unwrap();
+    let done = app.add("C ~2h due:today", None, None).unwrap();
+    app.complete(&[done.id]).unwrap();
+    let tasks = app
+        .list("status:all due:today", "", TaskSort::Smart)
+        .unwrap();
+    assert_eq!(tasks.len(), 3);
+    assert_eq!(planned_minutes(&tasks), 90);
+}
+
+// ------------------------------------------------------------ duplicate
+
+#[test]
+fn duplicate_copies_task_tree_and_moves_dates() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app
+        .add(
+            "Release #work +ship !high due:fri ~2h remind:due-1h",
+            None,
+            None,
+        )
+        .unwrap();
+    app.set_notes(task.id, "steps").unwrap();
+    app.checklist_add(task.id, "tag").unwrap();
+    let item = app.detail(task.id).unwrap().checklist[0].id;
+    app.checklist_toggle(item).unwrap();
+    let sub = app.add("Changelog due:thu", None, Some(task.id)).unwrap();
+    let blocker = app.add("Review", None, None).unwrap();
+    app.block(task.id, blocker.id).unwrap();
+    app.complete(&[sub.id]).unwrap();
+
+    let copies = app.duplicate(&[task.id], "due:+8d").unwrap();
+    assert_eq!(copies.len(), 1);
+    let copy = app.detail(copies[0].id).unwrap();
+    assert_eq!(copy.task.title, "Release");
+    assert_eq!(copy.task.project.as_deref(), Some("work"));
+    assert_eq!(copy.task.tags, ["ship"]);
+    assert_eq!(copy.task.notes, "steps");
+    assert_eq!(copy.task.estimate_min, Some(120));
+    assert_eq!(copy.task.due_date, Some(date(2026, 10, 23)));
+    assert!(!copy.checklist[0].checked, "checklist reset");
+    assert_eq!(copy.blocked_by[0].id, blocker.id);
+    assert_eq!(copy.subtasks.len(), 1);
+    let sub_copy = &copy.subtasks[0];
+    assert!(sub_copy.is_open(), "subtasks reopen");
+    assert_eq!(sub_copy.due_date, Some(date(2026, 10, 22)), "moved a week");
+    let original = app.detail(task.id).unwrap();
+    assert_eq!(
+        copy.reminders[0].fire_at - original.reminders[0].fire_at,
+        7 * 24 * HOUR_MS
+    );
+    // One undo removes the copy and its subtask.
+    app.undo().unwrap();
+    assert!(app.task(copies[0].id).is_err());
+    assert!(app.task(sub_copy.id).is_err());
+}
+
+#[test]
+fn duplicate_skips_subtasks_whose_parent_is_copied_too() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let parent = app.add("Trip", None, None).unwrap();
+    let child = app.add("Pack", None, Some(parent.id)).unwrap();
+    let copies = app.duplicate(&[parent.id, child.id], "").unwrap();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(titles(&app, "Pack"), ["Pack", "Pack"]);
+    let sibling = app.duplicate(&[child.id], "Unpack").unwrap();
+    assert_eq!(sibling[0].parent_id, Some(parent.id));
+    assert_eq!(sibling[0].title, "Unpack");
+}
+
+// --------------------------------------------------------------- snooze
+
+#[test]
+fn snooze_adds_an_undoable_reminder() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("Call back", None, None).unwrap();
+    let (at, tasks) = app.snooze(&[task.id], "15m").unwrap();
+    assert_eq!(at, app.now_ms() + 15 * 60_000);
+    assert_eq!(tasks[0].id, task.id);
+    assert_eq!(app.detail(task.id).unwrap().reminders[0].fire_at, at);
+    app.undo().unwrap();
+    assert!(app.detail(task.id).unwrap().reminders.is_empty());
+    app.complete(&[task.id]).unwrap();
+    assert!(app.snooze(&[task.id], "1h").is_err(), "closed");
+}
+
+#[test]
+fn recently_reminded_lists_fired_reminders() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("Stand-up remind:11:00", None, None).unwrap();
+    assert!(app.recently_reminded(30).unwrap().is_empty());
+    let fired = app.take_due_reminders().unwrap();
+    assert_eq!(fired.len(), 1);
+    let recent = app.recently_reminded(30).unwrap();
+    assert_eq!(recent[0].id, task.id);
+}
+
+// -------------------------------------------------------------- capture
+
+#[test]
+fn capture_file_adds_tasks_and_empties_the_file() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.save_filter("Work", "#work").unwrap();
+    app.set_context(Some("Work")).unwrap();
+    let inbox = dir.path().join("inbox.txt");
+    assert!(
+        app.capture_file(&inbox).unwrap().added.is_empty(),
+        "missing"
+    );
+    std::fs::write(
+        &inbox,
+        "- Buy milk +shop\n\n* [ ] Call Bob due:tom\nFix it due:someday\n#home !high\n",
+    )
+    .unwrap();
+    let report = app.capture_file(&inbox).unwrap();
+    let got: Vec<&str> = report.added.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(
+        got,
+        ["Buy milk", "Call Bob", "Fix it due:someday", "#home !high"]
+    );
+    assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+    assert!(
+        report.added.iter().all(|t| t.project.is_none()),
+        "context does not apply"
+    );
+    assert_eq!(report.added[0].tags, ["shop"]);
+    assert_eq!(report.added[1].due_date, Some(date(2026, 10, 16)));
+    assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "");
+    // One undo step for the whole file.
+    app.undo().unwrap();
+    assert!(
+        app.list_with("", "", TaskSort::Smart, false)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn capture_leaves_an_empty_inbox_alone() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("x", None, None).unwrap();
+    app.undo().unwrap();
+    let inbox = dir.path().join("inbox.txt");
+    std::fs::write(&inbox, "\n  \n").unwrap();
+    app.capture_file(&inbox).unwrap();
+    // No batch was started, so the undone add can still be redone.
+    assert!(app.redo().unwrap().is_some());
+    assert_eq!(app.task(task.id).unwrap().title, "x");
+}

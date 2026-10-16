@@ -26,13 +26,14 @@ pub use db::Db;
 pub use error::StoreError;
 pub use extras::{Reminder, TimeEntry};
 pub use journal::{
-    EventKind, HistoryEntry, SnapshotChecklistItem, SnapshotReminder, TaskSnapshot, UndoOutcome,
+    EventKind, HistoryEntry, SnapshotChecklistItem, SnapshotReminder, SnapshotTimeEntry,
+    TaskSnapshot, UndoOutcome,
 };
 pub use maintenance::{CheckReport, GcReport, remove_backup_copy};
 pub use migrations::SCHEMA_VERSION;
 pub use open::{APPLICATION_ID, DbMode, FileState, PasswordSource, Store, detect, inspect};
 pub use query::{QueryCtx, SearchHit, TaskQuery, TaskSort};
-pub use reports::{DueRow, TimeRow};
+pub use reports::{DueRow, EstimateRow, TimeRow};
 pub use tasks::TaskFields;
 pub use templates::TemplateRow;
 pub use transfer::{EventRecord, ProjectRecord};

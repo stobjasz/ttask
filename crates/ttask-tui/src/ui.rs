@@ -85,6 +85,12 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
         Mode::Confirm { message, .. } => draw_confirm(f, tui, area, message),
         Mode::Editor(_) => draw_editor(f, tui, area),
         Mode::Report { lines, scroll } => draw_report(f, tui, area, lines, *scroll),
+        Mode::TimeLog {
+            title,
+            entries,
+            idx,
+            ..
+        } => draw_time_log(f, tui, area, title, entries, *idx),
         _ => {}
     }
 }
@@ -112,6 +118,14 @@ fn draw_header(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
         ),
         Span::styled(format!(" ({})", tui.tasks.len()), tui.theme.dim),
     ];
+    // The agenda shows planned time per day instead.
+    let planned = ttask_app::planned_minutes(tui.tasks.iter().map(|(t, _)| t));
+    if planned > 0 && tui.agenda.is_none() {
+        left.push(Span::styled(
+            format!("  ~{} planned", format_minutes(planned)),
+            tui.theme.dim,
+        ));
+    }
     if let Some(context) = &tui.context {
         left.push(Span::styled(format!("  @{context}"), tui.theme.project));
     }
@@ -363,8 +377,12 @@ fn draw_agenda(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
         if selected_day {
             header_style = header_style.add_modifier(Modifier::UNDERLINED);
         }
-        let header = format!("{} {}", date.strftime("%a"), date.day());
         let tasks = &agenda.columns[day];
+        let mut header = format!("{} {}", date.strftime("%a"), date.day());
+        let planned = ttask_app::planned_minutes(tasks);
+        if planned > 0 {
+            header.push_str(&format!(" ~{}", format_minutes(planned)));
+        }
         let offset = if selected_day {
             (tui.task_idx + 1).saturating_sub(body_height)
         } else {
@@ -1269,6 +1287,74 @@ fn truncate_plain(s: &str, width: usize) -> String {
             used <= width
         })
         .collect()
+}
+
+fn draw_time_log(
+    f: &mut Frame<'_>,
+    tui: &Tui,
+    area: Rect,
+    title: &str,
+    entries: &[ttask_app::TimeEntry],
+    idx: usize,
+) {
+    let t = &tui.theme;
+    let height = (entries.len() as u16 + 6).clamp(8, area.height.saturating_sub(4));
+    let rect = centered(area, 64, height);
+    f.render_widget(Clear, rect);
+    let now = tui.app.now_ms();
+    let total: i64 = entries.iter().map(|e| e.minutes(now)).sum();
+    let heading = format!(
+        "Time log: {} · {}",
+        truncate(title, 30),
+        format_minutes(total.max(0) as u32)
+    );
+    let block = pane_block(tui, &heading, true);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let [list, hints] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let tz = tui.app.clock().time_zone();
+    let today = Some(tui.app.today());
+    let rows = list.height as usize;
+    let offset = (idx + 1).saturating_sub(rows);
+    let lines: Vec<Line> = if entries.is_empty() {
+        vec![Line::styled("Nothing logged yet.", t.dim)]
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(rows)
+            .map(|(i, e)| {
+                let text = format!(
+                    " {:>5}  {}",
+                    e.id,
+                    ttask_app::describe_time_entry(e, now, &tz, today)
+                );
+                let style = if i == idx { t.selected } else { t.base };
+                Line::styled(pad(&text, list.width as usize), style)
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(lines), list);
+    let mut spans = Vec::new();
+    let undo = tui.keymap.first_key(Action::Undo);
+    for (i, (key, name)) in [
+        ("a", "log time"),
+        ("e", "edit"),
+        ("d", "remove"),
+        (undo.as_str(), "undo"),
+        ("Esc", "close"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        if i > 0 {
+            spans.push(Span::styled(" · ", t.dim));
+        }
+        spans.push(Span::styled(key.to_string(), t.accent));
+        spans.push(Span::styled(format!(" {name}"), t.dim));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), hints);
 }
 
 fn draw_confirm(f: &mut Frame<'_>, tui: &Tui, area: Rect, message: &str) {

@@ -21,7 +21,36 @@ pub struct TimeRow {
     pub ended_at: Option<i64>,
 }
 
+/// A done task with an estimate and the time tracked on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EstimateRow {
+    pub completed_at: i64,
+    pub estimate_min: u32,
+    /// Finished entries only.
+    pub tracked_ms: i64,
+}
+
 impl Db<'_> {
+    /// Done (not cancelled) tasks completed since `since_ms` that have both
+    /// an estimate and some tracked time.
+    pub fn estimate_rows_since(&self, since_ms: i64) -> Result<Vec<EstimateRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.completed_at, t.estimate_min, sum(e.ended_at - e.started_at)
+               FROM tasks t JOIN time_entries e ON e.task_id = t.id AND e.ended_at IS NOT NULL
+              WHERE t.status = 'done' AND t.deleted_at IS NULL AND t.completed_at >= ?1
+                AND t.estimate_min > 0
+              GROUP BY t.id",
+        )?;
+        let rows = stmt.query_map([since_ms], |r| {
+            Ok(EstimateRow {
+                completed_at: r.get(0)?,
+                estimate_min: r.get(1)?,
+                tracked_ms: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Completion times of done (not cancelled) tasks since `since_ms`.
     pub fn completions_since(&self, since_ms: i64) -> Result<Vec<i64>> {
         let mut stmt = self.conn.prepare(

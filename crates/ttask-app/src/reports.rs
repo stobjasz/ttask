@@ -1,5 +1,6 @@
-//! Reports: tasks completed per week, tracked time per project, and how
-//! many tasks were overdue at the end of each week.
+//! Reports: tasks completed per week, tracked time per project, estimates
+//! against tracked time, and how many tasks were overdue at the end of each
+//! week.
 
 use jiff::ToSpan;
 use jiff::civil::Date;
@@ -25,12 +26,42 @@ pub struct ProjectTime {
     pub minutes: u32,
 }
 
+/// Done tasks of one week that had an estimate and tracked time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EstimateWeek {
+    pub week: String,
+    pub start: Date,
+    pub tasks: u32,
+    pub estimated: u32,
+    pub tracked: u32,
+}
+
+impl EstimateWeek {
+    /// Tracked time over (positive) or under the estimate, in percent.
+    pub fn deviation(&self) -> Option<i64> {
+        (self.estimated > 0).then(|| {
+            (i64::from(self.tracked) - i64::from(self.estimated)) * 100 / i64::from(self.estimated)
+        })
+    }
+}
+
+/// Estimated minutes of the open tasks in `tasks`.
+pub fn planned_minutes<'a>(tasks: impl IntoIterator<Item = &'a ttask_core::Task>) -> u32 {
+    tasks
+        .into_iter()
+        .filter(|t| t.is_open())
+        .filter_map(|t| t.estimate_min)
+        .sum()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
     pub completed: Vec<WeekCount>,
     /// Since `time_since`, most time first.
     pub time: Vec<ProjectTime>,
     pub time_since: Date,
+    /// Per week, by completion date.
+    pub estimates: Vec<EstimateWeek>,
     /// Open tasks past their due date at the end of each week (today for
     /// the current one). Based on current due dates: a due date moved later
     /// also moves the task out of earlier weeks.
@@ -88,6 +119,25 @@ impl App {
         by_project.retain(|p| p.minutes > 0);
         by_project.sort_by(|a, b| b.minutes.cmp(&a.minutes).then(a.project.cmp(&b.project)));
 
+        let rows = db.estimate_rows_since(start_ms(first))?;
+        let estimates = starts
+            .iter()
+            .map(|&s| {
+                let (from, to) = (start_ms(s), start_ms(s) + 7 * DAY_MS);
+                let week: Vec<_> = rows
+                    .iter()
+                    .filter(|r| r.completed_at >= from && r.completed_at < to)
+                    .collect();
+                EstimateWeek {
+                    week: label(s),
+                    start: s,
+                    tasks: week.len() as u32,
+                    estimated: week.iter().map(|r| r.estimate_min).sum(),
+                    tracked: week.iter().map(|r| (r.tracked_ms / 60_000) as u32).sum(),
+                }
+            })
+            .collect();
+
         let due = db.due_rows()?;
         let overdue = starts
             .iter()
@@ -116,6 +166,7 @@ impl App {
             completed,
             time: by_project,
             time_since: first,
+            estimates,
             overdue,
         })
     }
@@ -169,6 +220,33 @@ impl Report {
                 nw = name_width,
                 w = bar_width
             ));
+        }
+        out.push(String::new());
+        out.push("Estimates vs tracked (done tasks with both)".into());
+        if self.estimates.iter().all(|w| w.tasks == 0) {
+            out.push("  none yet (estimate with ~30m, then track or log time)".into());
+        } else {
+            let fmt = ttask_core::duration::format_minutes;
+            for w in &self.estimates {
+                if w.tasks == 0 {
+                    out.push(format!("  {}  -", w.week));
+                    continue;
+                }
+                let deviation = match w.deviation() {
+                    Some(0) => "on estimate".to_owned(),
+                    Some(d) if d > 0 => format!("{d}% over"),
+                    Some(d) => format!("{}% under", -d),
+                    None => String::new(),
+                };
+                out.push(format!(
+                    "  {}  {:>2} task{}  estimated {:<7} tracked {:<7} {deviation}",
+                    w.week,
+                    w.tasks,
+                    if w.tasks == 1 { " " } else { "s" },
+                    fmt(w.estimated),
+                    fmt(w.tracked),
+                ));
+            }
         }
         out.push(String::new());
         out.push("Overdue at the end of each week".into());

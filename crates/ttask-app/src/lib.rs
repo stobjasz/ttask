@@ -3,13 +3,16 @@
 //! undoable batch in the journal.
 
 mod backups;
+mod capture;
 mod detail;
 pub mod editor;
 mod hooks;
 pub mod io;
 pub mod launch;
 mod reports;
+mod snooze;
 mod templates;
+mod timelog;
 mod views;
 
 use jiff::ToSpan;
@@ -28,10 +31,13 @@ use ttask_store::{
 };
 
 pub use backups::{BackupPolicy, RotationReport};
+pub use capture::CaptureReport;
 pub use detail::TaskDetail;
 pub use hooks::{HookConfig, HookPayload, HookReporter};
-pub use reports::{ProjectTime, Report, WeekCount};
+pub use reports::{EstimateWeek, ProjectTime, Report, WeekCount, planned_minutes};
+pub use snooze::parse_snooze;
 pub use templates::{Template, TemplateKind, TemplateTask, UseTemplate};
+pub use timelog::{LogSpec, describe as describe_time_entry};
 pub use ttask_store::{Reminder, TimeEntry};
 pub use views::{View, ViewKind, arrange_tree};
 
@@ -404,26 +410,60 @@ impl App {
                 mods = &with_defaults;
             }
         }
-        let (today, tz, now) = (self.today(), self.clock.time_zone(), self.now_ms());
+        let (today, tz) = (self.today(), self.clock.time_zone());
+        self.batch(|tx| insert_from_mods(tx, &title, mods, project, parent, today, &tz))
+    }
+
+    /// Copies tasks with their checklist (unchecked), subtasks, tags,
+    /// reminders still to come and dependencies, then applies `text` (quick-add
+    /// tokens, e.g. `due:+1w`) to each copy. Moving the due date moves the
+    /// subtasks' dates and the reminders by as many days. One undo step.
+    pub fn duplicate(&mut self, ids: &[TaskId], text: &str) -> Result<Vec<Task>> {
+        let (today, tz) = (self.today(), self.clock.time_zone());
+        let mods = parse_mods(text, today)?;
+        if mods.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+            return Err(AppError::EmptyTitle);
+        }
         self.batch(|tx| {
-            let mut project_id = project;
-            if let Some(parent) = parent {
-                // Subtasks live in their parent's project unless told otherwise.
-                project_id = tx.db.task(parent)?.project_id;
+            let mut out = Vec::new();
+            for &id in ids {
+                let task = tx.db.task(id)?;
+                // A subtask is copied along with its parent when both are asked for.
+                if task.parent_id.is_some_and(|p| ids.contains(&p)) {
+                    continue;
+                }
+                let copy = tx.db.insert_task(&NewTask::from(&task), tx.now)?;
+                let mut fields = TaskFields::from(&copy);
+                fields.recur_series = None;
+                apply_mods(tx.db, &mut fields, &mods, today, tx.now)?;
+                let copy = tx.db.save_task(copy.id, &fields, tx.now)?;
+                // How far the copy's due date moved from the original's.
+                let (days, shift_ms) = match (task.due_date, copy.due_date) {
+                    (Some(old), Some(new)) => (
+                        ttask_core::date::days_between(old, new),
+                        due_instant(new, copy.due_time, &tz) - due_instant(old, task.due_time, &tz),
+                    ),
+                    _ => (0, 0),
+                };
+                copy_extras(tx.db, &task, copy.id, shift_ms, tx.now)?;
+                set_reminders(tx.db, &copy, &mods, today, &tz)?;
+                for child in tx.db.subtasks(id)? {
+                    let mut draft = NewTask::from(&child);
+                    draft.parent_id = Some(copy.id);
+                    draft.project_id = copy.project_id;
+                    draft.recur_series = None;
+                    let shift = |d: Option<Date>| d.and_then(|d| d.checked_add(days.days()).ok());
+                    draft.due_date = shift(draft.due_date);
+                    draft.scheduled_date = shift(draft.scheduled_date);
+                    draft.wait_until = shift(draft.wait_until);
+                    let sub = tx.db.insert_task(&draft, tx.now)?;
+                    copy_extras(tx.db, &child, sub.id, shift_ms, tx.now)?;
+                    tx.record_new(sub.id, EventKind::Created)?;
+                }
+                tx.record_new(copy.id, EventKind::Created)?;
+                out.push(tx.db.task(copy.id)?);
             }
-            let draft = NewTask {
-                title,
-                project_id,
-                parent_id: parent,
-                ..NewTask::default()
-            };
-            let task = tx.db.insert_task(&draft, now)?;
-            let mut fields = TaskFields::from(&task);
-            apply_mods(tx.db, &mut fields, mods, today, now)?;
-            let task = tx.db.save_task(task.id, &fields, now)?;
-            set_reminders(tx.db, &task, mods, today, &tz)?;
-            tx.record_new(task.id, EventKind::Created)?;
-            Ok(tx.db.task(task.id)?)
+            Ok(out)
         })
     }
 
@@ -900,6 +940,60 @@ impl App {
         }
         Ok(out)
     }
+}
+
+/// Creates a task from parsed quick-add text inside a batch.
+fn insert_from_mods(
+    tx: &Batch<'_, '_>,
+    title: &str,
+    mods: &Mods,
+    project: Option<ProjectId>,
+    parent: Option<TaskId>,
+    today: Date,
+    tz: &jiff::tz::TimeZone,
+) -> Result<Task> {
+    let mut project_id = project;
+    if let Some(parent) = parent {
+        // Subtasks live in their parent's project unless told otherwise.
+        project_id = tx.db.task(parent)?.project_id;
+    }
+    let draft = NewTask {
+        title: title.to_owned(),
+        project_id,
+        parent_id: parent,
+        ..NewTask::default()
+    };
+    let task = tx.db.insert_task(&draft, tx.now)?;
+    let mut fields = TaskFields::from(&task);
+    apply_mods(tx.db, &mut fields, mods, today, tx.now)?;
+    let task = tx.db.save_task(task.id, &fields, tx.now)?;
+    set_reminders(tx.db, &task, mods, today, tz)?;
+    tx.record_new(task.id, EventKind::Created)?;
+    Ok(tx.db.task(task.id)?)
+}
+
+/// Gives a copy `from`'s checklist (unchecked), dependencies and the
+/// reminders still to come, moved by `shift_ms`.
+fn copy_extras(
+    db: &Db<'_>,
+    from: &Task,
+    to: TaskId,
+    shift_ms: i64,
+    now: i64,
+) -> ttask_store::Result<()> {
+    for item in db.checklist(from.id)? {
+        db.add_checklist_item(to, &item.text)?;
+    }
+    for blocker in db.blockers(from.id)? {
+        db.add_dependency(blocker, to)?;
+    }
+    for reminder in db.reminders_for(from.id)? {
+        let at = reminder.fire_at + shift_ms;
+        if reminder.fired_at.is_none() && at > now {
+            db.add_reminder(to, at)?;
+        }
+    }
+    Ok(())
 }
 
 /// One undoable batch inside a write transaction.

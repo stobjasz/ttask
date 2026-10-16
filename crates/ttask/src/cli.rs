@@ -78,20 +78,38 @@ pub enum Command {
         history: bool,
     },
     /// Change tasks: `ttask edit 42 due:+3d -+later !high New title`;
-    /// with no changes opens $EDITOR on a form. Put --notes/--parent before
-    /// the changes.
+    /// with no changes opens $EDITOR on a form. Put --notes/--parent/--filter
+    /// before the changes.
     Edit {
-        #[arg(required = true, value_name = "ID")]
-        id: TaskId,
+        /// A task id (with --filter: the first modification)
+        #[arg(value_name = "ID", required_unless_present = "filter")]
+        first: Option<String>,
         /// More ids, then modifications
-        #[arg(num_args = 0.., allow_hyphen_values = true)]
-        changes: Vec<String>,
+        #[arg(num_args = 0.., allow_hyphen_values = true, value_name = "CHANGES")]
+        rest: Vec<String>,
         /// Replace the notes
-        #[arg(long)]
+        #[arg(long, conflicts_with = "filter")]
         notes: Option<String>,
         /// Make it a subtask of this task (0 = top level)
-        #[arg(long, value_name = "ID")]
+        #[arg(long, value_name = "ID", conflicts_with = "filter")]
         parent: Option<TaskId>,
+        /// Change every task matching this filter (as `ls` shows it, within
+        /// the active context) instead of ids; one undo step reverts them all
+        #[arg(long, value_name = "QUERY")]
+        filter: Option<String>,
+        /// Do not ask before changing more than one task by --filter
+        #[arg(long, short, requires = "filter")]
+        yes: bool,
+    },
+    /// Copy tasks with their checklist (unchecked), subtasks and reminders,
+    /// then apply changes to the copies: `ttask dup 42 due:+1w`
+    #[command(visible_alias = "duplicate")]
+    Dup {
+        #[arg(required = true, value_name = "ID")]
+        id: TaskId,
+        /// More ids, then modifications for the copies
+        #[arg(num_args = 0.., allow_hyphen_values = true)]
+        changes: Vec<String>,
     },
     /// Complete tasks (recurring tasks spawn their next instance)
     Done(Targets),
@@ -179,8 +197,14 @@ pub enum Command {
         #[command(subcommand)]
         action: TimerAction,
     },
-    /// Reminders
+    /// Reminders: list upcoming ones, fire due ones, snooze
     Remind(RemindArgs),
+    /// Add the lines of the capture file (`[capture] file` in the config)
+    /// as tasks and empty it; `remind --run` and the TUI do this too
+    Capture {
+        /// Read this file instead of the configured one
+        file: Option<PathBuf>,
+    },
     /// Manage projects
     #[command(visible_alias = "projects")]
     Project {
@@ -293,9 +317,39 @@ pub enum TimerAction {
     Stop,
     /// Show the running timer
     Status,
+    /// Log time already spent: `ttask timer log 42 45m`, `... 1h30m
+    /// yesterday@14:00` (without a start it ends now; a date alone keeps
+    /// the current time of day)
+    Log {
+        id: TaskId,
+        /// Length, then an optional start
+        #[arg(required = true, num_args = 1.., value_name = "LENGTH [START]")]
+        spec: Vec<String>,
+    },
+    /// List time entries with their ids: one task's, or every task's over
+    /// the last days
+    Ls {
+        id: Option<TaskId>,
+        /// Days back, today included (without a task id)
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+    },
+    /// Change an entry: `ttask timer edit 31 45m` (new length),
+    /// `... 9:15` (new start), `... 45m yesterday@9:15` (both)
+    Edit {
+        entry: i64,
+        #[arg(required = true, num_args = 1.., value_name = "[LENGTH] [START]")]
+        spec: Vec<String>,
+    },
+    /// Remove time entries (undoable)
+    Rm {
+        #[arg(required = true, value_name = "ENTRY")]
+        entries: Vec<i64>,
+    },
 }
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct RemindArgs {
     /// Fire due reminders as desktop notifications and exit
     #[arg(long, conflicts_with_all = ["install", "uninstall"])]
@@ -306,6 +360,19 @@ pub struct RemindArgs {
     /// Remove the scheduler entry
     #[arg(long)]
     pub uninstall: bool,
+    #[command(subcommand)]
+    pub action: Option<RemindAction>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemindAction {
+    /// Remind again later: `ttask remind snooze 42 1h` (also 15m, 18:00,
+    /// tom@9am; default 15m). Without ids: the tasks whose reminders fired
+    /// in the last 30 minutes
+    Snooze {
+        #[arg(num_args = 0.., value_name = "ID... [WHEN]")]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

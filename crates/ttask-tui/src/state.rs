@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use secrecy::SecretString;
-use ttask_app::{App, TaskDetail, View, ViewKind, arrange_tree};
+use ttask_app::{App, TaskDetail, TimeEntry, View, ViewKind, arrange_tree};
 use ttask_core::date::parse_date;
 use ttask_core::quickadd::{Change, Mods, Wait, is_tag_name};
 use ttask_core::{Priority, Task, TaskId};
@@ -48,6 +48,8 @@ pub struct Settings {
     pub focus: FocusSettings,
     /// Capture the mouse (clicks and the wheel).
     pub mouse: bool,
+    /// The capture inbox: its lines become tasks while the TUI runs.
+    pub capture_file: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -66,6 +68,7 @@ impl Default for Settings {
             open_link: None,
             focus: FocusSettings::default(),
             mouse: true,
+            capture_file: None,
         }
     }
 }
@@ -106,6 +109,13 @@ pub enum PromptKind {
     SaveTemplate(TaskId),
     /// The template name, and whether it is a project template.
     UseTemplate(String, bool),
+    Duplicate(Vec<TaskId>),
+    LogTime(TaskId),
+    EditTime {
+        task: TaskId,
+        entry: i64,
+    },
+    Snooze(Vec<TaskId>),
 }
 
 impl PromptKind {
@@ -131,6 +141,10 @@ impl PromptKind {
             PromptKind::SaveTemplate(_) => "Save as template named",
             PromptKind::UseTemplate(_, false) => "New task from template (title and tokens)",
             PromptKind::UseTemplate(_, true) => "Create the template's tasks in project",
+            PromptKind::Duplicate(_) => "Duplicate with (tokens, Enter for an exact copy)",
+            PromptKind::LogTime(_) => "Log time (45m, 1h30m yesterday@14:00)",
+            PromptKind::EditTime { .. } => "Entry (length and/or start)",
+            PromptKind::Snooze(_) => "Remind again in / at (15m, 1h, 18:00, tom@9am)",
         }
     }
 
@@ -179,6 +193,13 @@ pub enum Mode {
     },
     /// The in-app task editor.
     Editor(Box<Editor>),
+    /// A task's time entries, to log, edit and remove time.
+    TimeLog {
+        task: TaskId,
+        title: String,
+        entries: Vec<TimeEntry>,
+        idx: usize,
+    },
     /// One task full-screen with a Pomodoro timer.
     Focus(Box<FocusSession>),
     Locked {
@@ -192,6 +213,8 @@ pub struct StatusLine {
     pub text: String,
     pub error: bool,
     pub at: Instant,
+    /// How long it stays.
+    pub lasts: Duration,
 }
 
 pub struct Tui {
@@ -233,11 +256,16 @@ pub struct Tui {
     last_activity: Instant,
     last_poll: Instant,
     last_reminders: Option<Instant>,
+    /// Tasks of the last reminder banner, for `z`.
+    last_reminded: Option<(Vec<TaskId>, Instant)>,
 }
 
 const POLL_EVERY: Duration = Duration::from_secs(2);
 const REMINDERS_EVERY: Duration = Duration::from_secs(30);
 const STATUS_FOR: Duration = Duration::from_secs(5);
+const REMINDER_STATUS_FOR: Duration = Duration::from_secs(60);
+/// After a reminder, `z` snoozes it rather than the selected task for this long.
+const SNOOZE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 impl Tui {
     pub fn new(app: App, settings: Settings) -> anyhow::Result<Tui> {
@@ -278,6 +306,7 @@ impl Tui {
             last_activity: now,
             last_poll: now,
             last_reminders: None,
+            last_reminded: None,
         };
         tui.reload();
         if let Some(i) = tui.sidebar_position(&View::today()) {
@@ -407,6 +436,7 @@ impl Tui {
             text: text.into(),
             error: false,
             at: Instant::now(),
+            lasts: STATUS_FOR,
         });
     }
 
@@ -415,6 +445,7 @@ impl Tui {
             text: text.into(),
             error: true,
             at: Instant::now(),
+            lasts: STATUS_FOR,
         });
     }
 
@@ -447,7 +478,7 @@ impl Tui {
         if self
             .status
             .as_ref()
-            .is_some_and(|s| now.duration_since(s.at) > STATUS_FOR)
+            .is_some_and(|s| now.duration_since(s.at) > s.lasts)
         {
             self.status = None;
         }
@@ -481,7 +512,28 @@ impl Tui {
             .is_none_or(|t| now.duration_since(t) >= REMINDERS_EVERY)
         {
             self.last_reminders = Some(now);
+            self.capture();
             self.fire_reminders();
+        }
+    }
+
+    /// Turns the capture inbox's lines into tasks.
+    fn capture(&mut self) {
+        let Some(path) = self.settings.capture_file.clone() else {
+            return;
+        };
+        match self.app.capture_file(&path) {
+            Ok(report) if !report.added.is_empty() => {
+                let n = report.added.len();
+                self.reload();
+                let mut text = format!("Captured {n} task{} into the Inbox", plural(n));
+                if !report.warnings.is_empty() {
+                    text.push_str(&format!(" ({})", report.warnings.join("; ")));
+                }
+                self.ok(text);
+            }
+            Ok(_) => {}
+            Err(e) => self.error(format!("capture: {e}")),
         }
     }
 
@@ -494,8 +546,19 @@ impl Tui {
                     }
                 }
                 let titles: Vec<&str> = fired.iter().map(|(_, t)| t.title.as_str()).collect();
-                self.ok(format!("Reminder: {}", titles.join(", ")));
+                let text = format!(
+                    "Reminder: {} ({} snoozes)",
+                    titles.join(", "),
+                    self.keymap.first_key(Action::Snooze)
+                );
+                let mut ids: Vec<TaskId> = fired.iter().map(|(_, t)| t.id).collect();
+                ids.dedup();
+                self.last_reminded = Some((ids, Instant::now()));
                 self.reload();
+                self.ok(text);
+                if let Some(status) = self.status.as_mut() {
+                    status.lasts = REMINDER_STATUS_FOR;
+                }
             }
             Ok(_) => {}
             Err(e) => self.error(e.to_string()),
@@ -558,6 +621,12 @@ impl Tui {
             Mode::Prompt(prompt) => self.prompt_key(prompt, key),
             Mode::Palette(palette) => self.palette_key(palette, key),
             Mode::Editor(editor) => self.editor_key(editor, key),
+            Mode::TimeLog {
+                task,
+                title,
+                entries,
+                idx,
+            } => self.time_log_key(task, title, entries, idx, key),
             Mode::Focus(session) => self.focus_key(session, key),
             Mode::Confirm { message, ids } => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
@@ -822,6 +891,9 @@ impl Tui {
                         self.open_view(prompt.previous_view.clone());
                         self.filter = prompt.previous_filter.clone();
                         self.reload();
+                    }
+                    PromptKind::LogTime(task) | PromptKind::EditTime { task, .. } => {
+                        return self.time_log_mode(task, None);
                     }
                     _ => {}
                 }
@@ -1149,6 +1221,71 @@ impl Tui {
                     })
                     .map_err(|e| e.to_string())
             }
+            PromptKind::Duplicate(ids) => match self.app.duplicate(ids, &text) {
+                Ok(copies) => {
+                    self.reload();
+                    if let Some(i) = copies
+                        .first()
+                        .and_then(|c| self.tasks.iter().position(|(t, _)| t.id == c.id))
+                    {
+                        self.task_idx = i;
+                        self.load_detail();
+                    }
+                    Ok(Some(match copies.as_slice() {
+                        [one] => format!("Copied as {}: {} (u to undo)", one.id, one.title),
+                        many => format!("Copied {} tasks (u to undo)", many.len()),
+                    }))
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            PromptKind::LogTime(task) => {
+                let task = *task;
+                match self.app.log_time(task, &text) {
+                    Ok(entry) => {
+                        self.reload();
+                        self.ok(format!(
+                            "Logged {}",
+                            ttask_core::duration::format_minutes(
+                                entry.minutes(self.app.now_ms()).max(0) as u32
+                            )
+                        ));
+                        return self.time_log_mode(task, Some(entry.id));
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            PromptKind::EditTime { task, entry } => {
+                let (task, entry) = (*task, *entry);
+                match self.app.edit_time_entry(entry, &text) {
+                    Ok(_) => {
+                        self.reload();
+                        self.ok("Entry changed (u to undo)");
+                        return self.time_log_mode(task, Some(entry));
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            PromptKind::Snooze(ids) => match self.app.snooze(ids, &text) {
+                Ok((at, tasks)) => {
+                    self.last_reminded = None;
+                    let tz = self.app.clock().time_zone();
+                    let when = ttask_core::jiff::Timestamp::from_millisecond(at)
+                        .map(|t| {
+                            let z = t.to_zoned(tz);
+                            if z.date() == self.app.today() {
+                                z.strftime("%H:%M").to_string()
+                            } else {
+                                z.strftime("%a %-d %b %H:%M").to_string()
+                            }
+                        })
+                        .unwrap_or_default();
+                    Ok(Some(match tasks.as_slice() {
+                        [one] => format!("Will remind about \"{}\" at {when}", one.title),
+                        many => format!("Will remind about {} tasks at {when}", many.len()),
+                    }))
+                }
+                Err(e) => Err(e.to_string()),
+            },
             PromptKind::Annotate(id) => self
                 .app
                 .annotate(*id, &text)
@@ -1760,8 +1897,137 @@ impl Tui {
                     self.error("Focus works on open tasks");
                 }
             }
+            Action::Duplicate => {
+                let ids = self.targets();
+                if !ids.is_empty() {
+                    self.open_prompt(PromptKind::Duplicate(ids), "");
+                }
+            }
+            Action::TimeLog => {
+                if let Some(id) = self.selected_task().map(|t| t.id) {
+                    self.mode = self.time_log_mode(id, None);
+                }
+            }
+            Action::Snooze => {
+                let recent = self
+                    .last_reminded
+                    .as_ref()
+                    .filter(|(_, at)| at.elapsed() < SNOOZE_WINDOW)
+                    .map(|(ids, _)| ids.clone());
+                let ids = recent.unwrap_or_else(|| self.targets());
+                if !ids.is_empty() {
+                    self.open_prompt(PromptKind::Snooze(ids), "15m");
+                }
+            }
             Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::Quit => self.quit = true,
+        }
+    }
+
+    /// The time-log popup for `task`, with `select` (an entry id) selected,
+    /// else the newest entry.
+    fn time_log_mode(&mut self, task: TaskId, select: Option<i64>) -> Mode {
+        match (self.app.task(task), self.app.time_entries(task)) {
+            (Ok(t), Ok(entries)) => {
+                let idx = select
+                    .and_then(|id| entries.iter().position(|e| e.id == id))
+                    .unwrap_or(entries.len().saturating_sub(1));
+                Mode::TimeLog {
+                    task,
+                    title: t.title,
+                    entries,
+                    idx,
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                self.error(e.to_string());
+                Mode::Normal
+            }
+        }
+    }
+
+    fn time_log_key(
+        &mut self,
+        task: TaskId,
+        title: String,
+        entries: Vec<TimeEntry>,
+        idx: usize,
+        key: KeyEvent,
+    ) -> Mode {
+        let selected = entries.get(idx).cloned();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => return Mode::Normal,
+            KeyCode::Char('a') => {
+                self.open_prompt(PromptKind::LogTime(task), "");
+                return std::mem::replace(&mut self.mode, Mode::Normal);
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if let Some(entry) = selected {
+                    let initial = self.entry_spec(&entry);
+                    self.open_prompt(
+                        PromptKind::EditTime {
+                            task,
+                            entry: entry.id,
+                        },
+                        &initial,
+                    );
+                    return std::mem::replace(&mut self.mode, Mode::Normal);
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete => {
+                if let Some(entry) = selected {
+                    self.mutate(|app| {
+                        app.remove_time_entries(&[entry.id])?;
+                        Ok("Entry removed (u to undo)".into())
+                    });
+                    return self.time_log_mode(task, None);
+                }
+            }
+            _ => match self.keymap.action(&key) {
+                Some(Action::Down) => {
+                    let idx = (idx + 1).min(entries.len().saturating_sub(1));
+                    return Mode::TimeLog {
+                        task,
+                        title,
+                        entries,
+                        idx,
+                    };
+                }
+                Some(Action::Up) => {
+                    return Mode::TimeLog {
+                        task,
+                        title,
+                        entries,
+                        idx: idx.saturating_sub(1),
+                    };
+                }
+                Some(action @ (Action::Undo | Action::Redo)) => {
+                    self.dispatch(action);
+                    return self.time_log_mode(task, selected.map(|e| e.id));
+                }
+                _ => {}
+            },
+        }
+        Mode::TimeLog {
+            task,
+            title,
+            entries,
+            idx,
+        }
+    }
+
+    /// `1h30m 2026-10-15@09:00`: an entry as the edit prompt reads it.
+    fn entry_spec(&self, entry: &TimeEntry) -> String {
+        let tz = self.app.clock().time_zone();
+        let start = ttask_core::jiff::Timestamp::from_millisecond(entry.started_at)
+            .map(|t| t.to_zoned(tz).strftime("%Y-%m-%d@%H:%M").to_string())
+            .unwrap_or_default();
+        match entry.ended_at {
+            Some(_) => format!(
+                "{} {start}",
+                ttask_core::duration::format_minutes(entry.minutes(self.app.now_ms()).max(1) as u32)
+            ),
+            None => start,
         }
     }
 

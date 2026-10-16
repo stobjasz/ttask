@@ -88,6 +88,18 @@ impl Db<'_> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Reminders fired at or after `since_ms` on open, live tasks, newest first.
+    pub fn fired_reminders_since(&self, since_ms: i64) -> Result<Vec<Reminder>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.task_id, r.fire_at, r.fired_at FROM reminders r
+               JOIN tasks t ON t.id = r.task_id
+              WHERE r.fired_at >= ?1 AND t.status = 'open' AND t.deleted_at IS NULL
+              ORDER BY r.fired_at DESC, r.id DESC",
+        )?;
+        let rows = stmt.query_map([since_ms], reminder_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn mark_reminder_fired(&self, id: i64, now_ms: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE reminders SET fired_at = ?2 WHERE id = ?1",
@@ -219,6 +231,63 @@ impl Db<'_> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn time_entry(&self, id: i64) -> Result<TimeEntry> {
+        self.conn
+            .query_row(
+                "SELECT id, task_id, started_at, ended_at FROM time_entries WHERE id = ?1",
+                [id],
+                time_entry_from_row,
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("time entry {id}")))
+    }
+
+    /// Logs a finished stretch of work on `task`.
+    pub fn add_time_entry(
+        &self,
+        task: TaskId,
+        started_at: i64,
+        ended_at: i64,
+    ) -> Result<TimeEntry> {
+        self.task(task)?;
+        check_span(started_at, Some(ended_at))?;
+        self.conn.execute(
+            "INSERT INTO time_entries (task_id, started_at, ended_at) VALUES (?1, ?2, ?3)",
+            params![task, started_at, ended_at],
+        )?;
+        Ok(TimeEntry {
+            id: self.conn.last_insert_rowid(),
+            task_id: task,
+            started_at,
+            ended_at: Some(ended_at),
+        })
+    }
+
+    /// Changes an entry's start and end (`None` keeps it running).
+    pub fn update_time_entry(
+        &self,
+        id: i64,
+        started_at: i64,
+        ended_at: Option<i64>,
+    ) -> Result<TimeEntry> {
+        let mut entry = self.time_entry(id)?;
+        check_span(started_at, ended_at)?;
+        self.conn.execute(
+            "UPDATE time_entries SET started_at = ?2, ended_at = ?3 WHERE id = ?1",
+            params![id, started_at, ended_at],
+        )?;
+        entry.started_at = started_at;
+        entry.ended_at = ended_at;
+        Ok(entry)
+    }
+
+    pub fn remove_time_entry(&self, id: i64) -> Result<TimeEntry> {
+        let entry = self.time_entry(id)?;
+        self.conn
+            .execute("DELETE FROM time_entries WHERE id = ?1", [id])?;
+        Ok(entry)
+    }
+
     /// Entries that overlap `[from_ms, to_ms)`, for reports.
     pub fn time_entries_between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<TimeEntry>> {
         let mut stmt = self.conn.prepare(
@@ -227,6 +296,15 @@ impl Db<'_> {
         )?;
         let rows = stmt.query_map(params![from_ms, to_ms], time_entry_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+fn check_span(started_at: i64, ended_at: Option<i64>) -> Result<()> {
+    match ended_at {
+        Some(end) if end <= started_at => Err(StoreError::Invalid(
+            "a time entry must end after it starts".into(),
+        )),
+        _ => Ok(()),
     }
 }
 

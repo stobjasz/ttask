@@ -152,11 +152,21 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Context { args } => context(&ctx, &args)?,
         Command::Show { id, history } => show(&ctx, id, history)?,
         Command::Edit {
-            id,
-            changes,
+            first,
+            rest,
+            filter,
+            yes,
             notes,
             parent,
-        } => edit(&ctx, id, &changes, notes, parent)?,
+        } => {
+            let args: Vec<String> = first.into_iter().chain(rest).collect();
+            match filter {
+                Some(query) => edit_by_filter(&ctx, &query, &args.join(" "), yes)?,
+                None => edit(&ctx, &args, notes, parent)?,
+            }
+        }
+        Command::Dup { id, changes } => duplicate(&ctx, id, &changes)?,
+        Command::Capture { file } => capture(&ctx, file)?,
         Command::Done(Targets {
             filter: Some(query),
             yes,
@@ -368,6 +378,7 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
         open_link: Some(Box::new(ttask_app::launch::open_link)),
         focus: ctx.config.focus,
         mouse: ui.mouse.unwrap_or(true),
+        capture_file: ctx.config.capture.path(),
     };
     ttask_tui::run(app, settings)
 }
@@ -456,7 +467,7 @@ fn list(
     }
     let today = app.today();
     let show_urgency = sort_order == TaskSort::Urgency;
-    for (task, depth) in arrange_tree(tasks) {
+    for (task, depth) in arrange_tree(tasks.clone()) {
         let mut line = task_line(&task, depth, today, &ctx.painter);
         if show_urgency {
             line.push_str(
@@ -465,6 +476,23 @@ fn list(
             );
         }
         println!("{line}");
+    }
+    // Planned time goes to stderr, like the context, so scripts reading
+    // the list are not affected.
+    let planned = ttask_app::planned_minutes(&tasks);
+    if planned > 0 {
+        let open = tasks.iter().filter(|t| t.is_open()).count();
+        eprintln!(
+            "{}",
+            ctx.painter.paint(
+                Tone::Dim,
+                &format!(
+                    "{open} open task{}, ~{} estimated",
+                    if open == 1 { "" } else { "s" },
+                    ttask_core::duration::format_minutes(planned)
+                )
+            )
+        );
     }
     if let Some(name) = context {
         eprintln!(
@@ -785,6 +813,16 @@ fn show(ctx: &Ctx, id: TaskId, with_history: bool) -> anyhow::Result<()> {
             );
         }
     }
+    if !detail.time_entries.is_empty() {
+        println!("\n  Time log");
+        for entry in &detail.time_entries {
+            println!(
+                "  {}  {}",
+                p.paint(Tone::Dim, &format!("{:>5}", entry.id)),
+                ttask_app::describe_time_entry(entry, app.now_ms(), &tz, Some(today))
+            );
+        }
+    }
     if !detail.subtasks.is_empty() {
         println!("\n  Subtasks");
         for sub in &detail.subtasks {
@@ -809,15 +847,10 @@ fn show(ctx: &Ctx, id: TaskId, with_history: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn edit(
-    ctx: &Ctx,
-    first: TaskId,
-    changes: &[String],
-    notes: Option<String>,
-    parent: Option<TaskId>,
-) -> anyhow::Result<()> {
-    let mut ids = vec![first];
-    let mut rest = changes;
+/// Leading task ids, then the rest of the words.
+fn split_ids(args: &[String]) -> (Vec<TaskId>, &[String]) {
+    let mut ids = Vec::new();
+    let mut rest = args;
     while let Some((head, tail)) = rest.split_first() {
         match head.parse::<TaskId>() {
             Ok(id) => {
@@ -827,6 +860,22 @@ fn edit(
             Err(_) => break,
         }
     }
+    (ids, rest)
+}
+
+fn edit(
+    ctx: &Ctx,
+    args: &[String],
+    notes: Option<String>,
+    parent: Option<TaskId>,
+) -> anyhow::Result<()> {
+    let (ids, rest) = split_ids(args);
+    let Some(&first) = ids.first() else {
+        bail!(
+            "`{}` is not a task id; try `ttask edit ID... CHANGES` or `ttask edit --filter QUERY CHANGES`",
+            args.first().map(String::as_str).unwrap_or("")
+        );
+    };
     let text = rest.join(" ");
     let mut app = ctx.open()?;
     if text.is_empty() && notes.is_none() && parent.is_none() {
@@ -864,6 +913,93 @@ fn edit(
         ));
     }
     Ok(())
+}
+
+/// `edit --filter QUERY CHANGES`: one batch, so one undo.
+fn edit_by_filter(ctx: &Ctx, query: &str, text: &str, yes: bool) -> anyhow::Result<()> {
+    let mut app = ctx.open()?;
+    // Check the changes before asking about the tasks.
+    if ttask_core::quickadd::parse_mods(text, app.today())?.is_empty() {
+        bail!("nothing to change; e.g. `ttask edit --filter +old -- -+old +archive`");
+    }
+    let tasks = app.list(query, "", TaskSort::Smart)?;
+    if tasks.is_empty() {
+        ctx.say("No tasks match.");
+        return Ok(());
+    }
+    if tasks.len() > 1 && !yes {
+        confirm_bulk(ctx, &app, &tasks, "change")?;
+    }
+    let ids: Vec<TaskId> = tasks.iter().map(|t| t.id).collect();
+    let updated = app.edit(&ids, text)?;
+    if ctx.json {
+        return ctx.print_json(&updated);
+    }
+    let today = app.today();
+    for task in &updated {
+        ctx.say(format!(
+            "Updated {}",
+            task_line(task, 0, today, &ctx.painter).trim_start()
+        ));
+    }
+    if updated.len() > 1 {
+        ctx.say(format!(
+            "Updated {} tasks; `ttask undo` reverts them together",
+            updated.len()
+        ));
+    }
+    Ok(())
+}
+
+fn duplicate(ctx: &Ctx, first: TaskId, changes: &[String]) -> anyhow::Result<()> {
+    let (more, rest) = split_ids(changes);
+    let ids: Vec<TaskId> = std::iter::once(first).chain(more).collect();
+    let mut app = ctx.open()?;
+    let copies = app.duplicate(&ids, &rest.join(" "))?;
+    if ctx.json {
+        return ctx.print_json(&copies);
+    }
+    let today = app.today();
+    for copy in &copies {
+        ctx.say(format!(
+            "Copied as {}",
+            task_line(copy, 0, today, &ctx.painter).trim_start()
+        ));
+    }
+    Ok(())
+}
+
+/// `ttask capture [FILE]`.
+fn capture(ctx: &Ctx, file: Option<PathBuf>) -> anyhow::Result<()> {
+    let Some(path) = file.or_else(|| ctx.config.capture.path()) else {
+        bail!(
+            "no capture file: set `file` under `[capture]` in the config \
+             (`ttask config path`), or pass one"
+        );
+    };
+    let mut app = ctx.open()?;
+    let report = app.capture_file(&path)?;
+    if ctx.json {
+        return ctx.print_json(&report);
+    }
+    print_capture(ctx, &app, &report);
+    if report.added.is_empty() {
+        ctx.say(format!("Nothing to capture in {}", path.display()));
+    }
+    Ok(())
+}
+
+fn print_capture(ctx: &Ctx, app: &App, report: &ttask_app::CaptureReport) {
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let today = app.today();
+    for task in &report.added {
+        ctx.say(format!(
+            "Captured {}",
+            task_line(task, 0, today, &ctx.painter).trim_start()
+        ));
+    }
 }
 
 fn edit_in_editor(ctx: &Ctx, app: &mut App, id: TaskId) -> anyhow::Result<()> {
@@ -1013,11 +1149,109 @@ fn timer(ctx: &Ctx, action: TimerAction) -> anyhow::Result<()> {
             )),
             None => ctx.say("No timer running"),
         },
+        TimerAction::Log { id, spec } => {
+            let entry = app.log_time(id, &spec.join(" "))?;
+            if ctx.json {
+                return ctx.print_json(&entry);
+            }
+            ctx.say(format!(
+                "Logged {} on task {id}: {} (entry {})",
+                describe_entry(&app, &entry),
+                app.task(id)?.title,
+                entry.id
+            ));
+        }
+        TimerAction::Edit { entry, spec } => {
+            let entry = app.edit_time_entry(entry, &spec.join(" "))?;
+            if ctx.json {
+                return ctx.print_json(&entry);
+            }
+            ctx.say(format!(
+                "Entry {} on task {} is now {}",
+                entry.id,
+                entry.task_id,
+                describe_entry(&app, &entry)
+            ));
+        }
+        TimerAction::Rm { entries } => {
+            let removed = app.remove_time_entries(&entries)?;
+            if ctx.json {
+                return ctx.print_json(&removed);
+            }
+            for entry in &removed {
+                ctx.say(format!(
+                    "Removed entry {} on task {}: {}",
+                    entry.id,
+                    entry.task_id,
+                    describe_entry(&app, entry)
+                ));
+            }
+        }
+        TimerAction::Ls { id, days } => time_log(ctx, &app, id, days)?,
     }
     Ok(())
 }
 
+fn describe_entry(app: &App, entry: &ttask_app::TimeEntry) -> String {
+    let today = Some(app.today());
+    ttask_app::describe_time_entry(entry, app.now_ms(), &app.clock().time_zone(), today)
+}
+
+/// `ttask timer ls [ID] [--days N]`: entry id, when, and (for every task)
+/// which task.
+fn time_log(ctx: &Ctx, app: &App, id: Option<TaskId>, days: u32) -> anyhow::Result<()> {
+    let rows: Vec<(ttask_app::TimeEntry, Task)> = match id {
+        Some(id) => {
+            let task = app.task(id)?;
+            app.time_entries(id)?
+                .into_iter()
+                .map(|e| (e, task.clone()))
+                .collect()
+        }
+        None => app.time_log(days)?,
+    };
+    if ctx.json {
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(e, t)| json!({"entry": e, "task": t}))
+            .collect();
+        return ctx.print_json(&rows);
+    }
+    if rows.is_empty() {
+        ctx.say("No time logged.");
+        return Ok(());
+    }
+    let (now, tz) = (app.now_ms(), app.clock().time_zone());
+    let mut total = 0;
+    for (entry, task) in &rows {
+        total += entry.minutes(now);
+        let mut line = format!(
+            "{}  {}",
+            ctx.painter.paint(Tone::Dim, &format!("{:>5}", entry.id)),
+            // The list spans days, so every line shows its date.
+            ttask_app::describe_time_entry(entry, now, &tz, None)
+        );
+        if id.is_none() {
+            line.push_str(&format!("  {:>4}  {}", task.id, task.title));
+        }
+        ctx.say(line);
+    }
+    ctx.say(ctx.painter.paint(
+        Tone::Dim,
+        &format!(
+            "{} entr{}, {} in total; change one with `ttask timer edit ENTRY 45m`",
+            rows.len(),
+            if rows.len() == 1 { "y" } else { "ies" },
+            ttask_core::duration::format_minutes(total.max(0) as u32)
+        ),
+    ));
+    Ok(())
+}
+
 fn reminders(ctx: &Ctx, args: RemindArgs) -> anyhow::Result<()> {
+    if let Some(RemindAction::Snooze { args }) = args.action {
+        return snooze(ctx, &args);
+    }
     if args.install {
         ctx.say(remind::install(&ctx.db)?);
         return Ok(());
@@ -1029,6 +1263,13 @@ fn reminders(ctx: &Ctx, args: RemindArgs) -> anyhow::Result<()> {
     let mut app = ctx.open()?;
     let tz = app.clock().time_zone();
     if args.run {
+        // The scheduled run also empties the capture inbox.
+        if let Some(path) = ctx.config.capture.path() {
+            match app.capture_file(&path) {
+                Ok(report) => print_capture(ctx, &app, &report),
+                Err(e) => eprintln!("warning: capture: {e}"),
+            }
+        }
         let fired = app.take_due_reminders()?;
         for (_, task) in &fired {
             let mut body = task.title.clone();
@@ -1057,6 +1298,47 @@ fn reminders(ctx: &Ctx, args: RemindArgs) -> anyhow::Result<()> {
             output::instant(r.fire_at, &tz),
             t.id,
             t.title
+        ));
+    }
+    Ok(())
+}
+
+/// Minutes back that `remind snooze` without ids looks for fired reminders.
+const SNOOZE_RECENT_MINUTES: i64 = 30;
+
+/// `ttask remind snooze [ID...] [WHEN]`.
+fn snooze(ctx: &Ctx, args: &[String]) -> anyhow::Result<()> {
+    let (mut ids, rest) = split_ids(args);
+    let spec = if rest.is_empty() {
+        "15m".to_owned()
+    } else {
+        rest.join(" ")
+    };
+    let mut app = ctx.open()?;
+    if ids.is_empty() {
+        ids = app
+            .recently_reminded(SNOOZE_RECENT_MINUTES)?
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        if ids.is_empty() {
+            bail!(
+                "no reminder fired in the last {SNOOZE_RECENT_MINUTES} minutes; \
+                 name the task: ttask remind snooze 42 1h"
+            );
+        }
+    }
+    let (at, tasks) = app.snooze(&ids, &spec)?;
+    if ctx.json {
+        return ctx.print_json(&json!({ "fire_at": at, "tasks": tasks }));
+    }
+    let tz = app.clock().time_zone();
+    for task in &tasks {
+        ctx.say(format!(
+            "Snoozed {}: {} until {}",
+            task.id,
+            task.title,
+            output::instant(at, &tz)
         ));
     }
     Ok(())
