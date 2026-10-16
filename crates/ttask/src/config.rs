@@ -144,6 +144,7 @@ pub const EXAMPLE: &str = r#"# ttask configuration. Every key is optional.
 # theme = "auto"               # auto | dark | light | ascii
 # keymap = "vim"               # vim | simple
 # show_detail_pane = "auto"    # auto | always | never
+# mouse = true                 # clicks and the wheel; false keeps plain text selection
 
 [keys]
 # done = "x"
@@ -163,6 +164,19 @@ pub const EXAMPLE: &str = r#"# ttask configuration. Every key is optional.
 # project = 1.0
 # notes = 1.0
 # blocked = -5.0
+
+[focus]                        # focus mode (F in the TUI)
+# work_minutes = 25
+# short_break_minutes = 5
+# long_break_minutes = 15
+# long_break_every = 4
+
+[hooks]                        # commands run after a change, with the tasks as JSON on stdin
+# on_add = "~/bin/ttask-hook"  # they see decrypted data; leave unset unless you trust them
+# on_modify = ""
+# on_complete = ""
+# on_delete = ""
+# timeout_seconds = 10
 "#;
 
 #[cfg(test)]

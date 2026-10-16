@@ -511,7 +511,7 @@ Recurrence and date tests pin the clock and time zone (injected `Clock` trait), 
 
 ## Implementation notes
 
-Status 2026-10-16: M0–M4 are implemented. Where the build differs from or sharpens the design above:
+Status 2026-10-16: M0–M5 are implemented. Where the build differs from or sharpens the design above:
 
 | Area | As built | Why |
 | --- | --- | --- |
@@ -540,6 +540,15 @@ Status 2026-10-16: M0–M4 are implemented. Where the build differs from or shar
 | TUI open database | `O`/`Ctrl-o`: path prompt with Tab completion; `inspect` validates first; encrypted files try the keychain, then a masked prompt. Rotating backups for such files only when no backup `dir` is configured, since backup names don't name the database | Switch files without restarting |
 | TUI search | `f`/`Ctrl-f` shows FTS results over every status as you type; `Esc` restores the previous view and filter | Faster than prompt → Enter → result |
 | TUI clipboard | `y`/`Y` write OSC 52 to the terminal, no clipboard crate | Works over SSH; no native dependencies |
+| Task editor | `e` is a form over every field; `TaskForm` (ttask-core) turns it into `Mods` for the changed fields only, plus `Mods.notes`, so a save is one `edit_with` batch. `ttask edit`'s TOML form uses the same code | One undo step; untouched RRULEs and times survive |
+| Reports | Computed in the services layer from three raw queries; ISO weeks; the overdue trend uses current due dates (no due-date history is kept) | No schema change; documented approximation |
+| Weekly review | A TUI mode over ordinary views (`modified:<-30d` for stale) plus a computed "projects without a next action" list; finishing stores `last_review` in `meta` | Every task key keeps working inside a step |
+| Agenda | Built-in view `agenda` (`ViewKind::Agenda`); the TUI buckets the week's tasks by due date, else scheduled date, and makes the selected day the task list | Task actions need no agenda-specific code |
+| Focus mode | Pomodoro state lives in the TUI, driven by `tick(now)`; work phases call `start_timer`/`stop_timer` | The time log stays the single record of tracked time |
+| Hooks | Run from `App::batch` after commit, from the batch's journal events: one process per event kind with all its tasks; no shell, stdout discarded, stderr's last line in the warning, killed after the timeout | Post-commit only, so hooks cannot corrupt or veto a change |
+| Templates | `templates` table (migration 0004) with a JSON body; dates as day offsets from the save day; `use_template` creates the tree in one batch; included in the JSON export (format version unchanged, field optional) | Reuses the task insert path and undo |
+| Markdown notes | A small line-based renderer in the TUI (no Markdown crate): headings, lists, task lists, quotes, fenced code, rules, emphasis, code spans, links | No new dependency; plain notes render unchanged |
+| Mouse | Crossterm mouse capture, hit-testing the pane rectangles recorded by the last frame; disabled around `$EDITOR`, on exit and on panic | `[ui] mouse = false` restores plain terminal selection |
 
 ## Roadmap and decisions
 
@@ -572,11 +581,12 @@ Added 2026-10-15 from a review of Taskwarrior, dstask, todoman/CalDAV, Super Pro
 | M4 | **Calendar export**: `export --format ics` (events for due tasks, recurrence, alarms) | Done |
 | M4 | `ttask open` (launch URLs in a task), bulk actions by filter (`done --filter …`), `ttask count` for prompts/status bars, GitHub-issues import | Done |
 | M4 | TUI: open another database file (validated), live full-text search, keys for links, dependencies, parent, history, copy, sort, lock, reload | Done |
-| **M5 Workflow** | Reports (completed per week, time per project, overdue trend) | Planned |
-| M5 | Guided weekly review in the TUI (inbox, overdue, stale, someday, projects without a next action) | Planned |
-| M5 | Focus mode / Pomodoro on top of the timer | Planned |
-| M5 | Hooks: user scripts on add/modify/complete with JSON on stdin (opt-in; they see decrypted data) | Planned |
-| M5 | Templates (projects with subtasks and checklists), annotations, TUI agenda (week grid), mouse support, rendered Markdown notes | Planned |
+| **M5 Workflow** | Reports (completed per week, time per project, overdue trend) | Done |
+| M5 | Guided weekly review in the TUI (inbox, overdue, stale, someday, projects without a next action) | Done |
+| M5 | Focus mode / Pomodoro on top of the timer | Done |
+| M5 | Hooks: user scripts on add/modify/complete with JSON on stdin (opt-in; they see decrypted data) | Done (plus `on_delete`) |
+| M5 | Templates (projects with subtasks and checklists), annotations, TUI agenda (week grid), mouse support, rendered Markdown notes | Done |
+| M5 | In-app task editor (every field in one form; `$EDITOR` still available) | Done |
 | **M6 Sync** | Multi-device sync. Preferred: an encrypted changeset log in a synced folder with per-field last-writer-wins on `uid`; alternatives: git-based (dstask style) or an opt-in one-way CalDAV/VTODO bridge for phones | Design needed |
 | M6 | Two-way issue-tracker sync (GitHub/GitLab/Jira) as an optional, separate command | Maybe |
 

@@ -132,6 +132,18 @@ impl App {
     }
 }
 
+/// `~/bin/hook` → `bin/hook` in the home directory.
+fn expand_home(program: &str) -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let rest = program
+        .strip_prefix("~/")
+        .or_else(|| program.strip_prefix("~\\"));
+    match (rest, home) {
+        (Some(rest), Some(home)) => std::path::Path::new(&home).join(rest),
+        _ => std::path::PathBuf::from(program),
+    }
+}
+
 fn run(
     command: &str,
     event: &str,
@@ -140,8 +152,9 @@ fn run(
 ) -> Result<(), String> {
     let parts = crate::editor::split_command(command);
     let (program, args) = parts.split_first().ok_or("empty command")?;
+    let program = expand_home(program);
     let json = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
-    let mut child = Command::new(program)
+    let mut child = Command::new(&program)
         .args(args)
         .env("TTASK_HOOK_EVENT", event)
         .env("TTASK_DB", &payload.database)
@@ -149,7 +162,7 @@ fn run(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("cannot run `{program}`: {e}"))?;
+        .map_err(|e| format!("cannot run `{}`: {e}", program.display()))?;
     if let Some(mut stdin) = child.stdin.take() {
         // A hook that ignores its input closes the pipe early; that is fine.
         let _ = stdin.write_all(&json);

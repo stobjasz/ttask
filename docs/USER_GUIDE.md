@@ -205,6 +205,7 @@ Used by `due:`, `sched:`, `remind:`, filters and the TUI date prompt. "Today" me
 | `yesterday` | yesterday |
 | `mon` … `sun`, `monday` … | the next such day, **counting today** |
 | `+3d`, `3d`, `+2w`, `+1m`, `+1y`, `-1d` | relative days / weeks / months / years |
+| `sow` | start of this week (Monday) |
 | `eow`, `eom`, `eoy` | end of this week (Sunday) / month / year |
 | `nw` (`next-week`), `nm` (`next-month`) | next Monday / the 1st of next month |
 | `2026-12-24` | an exact date |
@@ -240,6 +241,7 @@ Without arguments, `ls` shows every open task.
 | `inbox` | Open tasks without a project (manual order) |
 | `today` | Due today or earlier, or scheduled today or earlier — i.e. what to work on now |
 | `next` | Everything actionable (not blocked, not scheduled for later), **most urgent first** |
+| `agenda` | Due this week, or scheduled this week when there is no due date (a week grid in the TUI) |
 | `upcoming` | Due or scheduled after today |
 | `overdue` | Open and past due |
 | `waiting` | Hidden by a future `wait:` date |
@@ -276,6 +278,7 @@ Quote the query in your shell when it contains `#`, `(`, `<`, `>` or `!`.
 | `due:today`, `due:<=fri`, `due:>+7d`, `due:none`, `due:any` | due date |
 | `sched:<=today`, `sched:none` | scheduled date |
 | `created:>=-7d`, `done:today` | creation / completion date |
+| `modified:<-30d` (or `updated:`) | last change (`modified:<-30d` finds stale tasks) |
 | `text:"two words"`, `invoice`, `"exact phrase"` | full-text (prefix match: `inv` finds *invoice*) |
 | `has:notes`, `has:due`, `has:subtasks` | presence |
 | `is:recurring`, `is:blocked`, `is:subtask`, `is:overdue`, `is:open`, `is:done` | state |
@@ -451,6 +454,16 @@ ttask show 12 --history
 
 A new change after an undo discards the redo history, as in an editor.
 
+### Annotations
+
+`ttask annotate 12 called the bank, waiting for a reply` (alias `note`; `n` in the TUI) adds a timestamped line to the end of the notes:
+
+```
+- 2026-10-16 14:02 called the bank, waiting for a reply
+```
+
+It's an ordinary edit of the notes (one undo step), so you can change or remove the line later.
+
 ### Waiting and Someday
 
 Not everything on your list is actionable now. Hide it instead of letting it clutter Today and Next:
@@ -545,6 +558,26 @@ Search, `show` and commands that take task ids (`done 12`, `edit 12`) ignore the
 
 ---
 
+### Templates
+
+Save a task you repeat with variations, such as a release or a trip, with its subtasks, checklists, tags, priority, estimate and repeat rule. Or save every open task of a project, for a whole onboarding:
+
+```sh
+ttask template save release --from 12               # task 12 and its subtasks
+ttask template save onboarding --project onboarding  # the project's open tasks
+ttask template ls
+ttask template use release 'Release 2.1 due:fri +big'   # text works like quick-add on the main task
+ttask template use onboarding --project onboarding/anna --start mon
+ttask template show release                          # the stored JSON
+ttask template rm release
+```
+
+Dates are stored relative to the day you saved the template. A subtask due two days after saving is due two days after the day you use the template, or after `--start`. Creating tasks from a template is one undo step. Templates are included in the JSON export.
+
+In the TUI, `Ctrl-t` saves the selected task as a template, and the command palette (`:`) lists every template (*Template: release*). Choosing one asks for the new task's title and tokens (or, for a project template, the project). A task template without a project of its own lands in the project you're viewing.
+
+---
+
 ## 9. Subtasks, checklists, dependencies, time tracking
 
 ### Subtasks
@@ -589,7 +622,31 @@ ttask timer status        # Timing 12: Prep slides for 25 min
 ttask timer stop
 ```
 
-Tracked time appears in `ttask show` and in the TUI detail pane; the TUI header shows the running timer.
+Tracked time appears in `ttask show` and in the TUI detail pane; the TUI header shows the running timer. Focus mode (`F` in the TUI, [§12](#12-the-tui)) runs the timer for you in Pomodoro phases.
+
+### Reports
+
+```sh
+ttask report              # the last 8 weeks
+ttask report --weeks 26
+ttask --json report
+```
+
+```
+Completed per week
+  2026-W41  ██████████████          7
+  2026-W42  ██████████████████████ 11
+
+Time per project since 2026-08-24
+  work      ██████████████████████ 12h 30m
+  Inbox     ███                     1h 45m
+
+Overdue at the end of each week
+  2026-W41  ████████                4
+  2026-W42  ████                    2
+```
+
+**Completed** counts done tasks (not cancelled). **Time** adds up the time log over the same weeks. **Overdue** counts the open tasks that were past their due date on the last day of each week (today, for this week). It uses each task's current due date, so moving a due date later also takes the task out of the earlier weeks. `R` in the TUI shows the same report.
 
 ---
 
@@ -701,7 +758,7 @@ Start it with `ttask` (no arguments). It needs an interactive terminal of at lea
 - **Header:** current view, task count, active context (`@work`), active filter, a changed sort order (`by urgency`), marked count, running timer, and `[L]` for an encrypted database.
 - **Sidebar:** built-in views with open counts, projects (subprojects indented), tags in use, saved filters.
 - **List:** the tasks of the selected view; subtasks indented under their parent.
-- **Detail:** everything about the selected task, including notes, checklist and subtasks. It appears when the terminal is at least 100 columns wide; on narrower terminals press `Enter` for a full-screen detail view.
+- **Detail:** everything about the selected task, including checklist and subtasks, and the notes rendered as Markdown (headings, lists, `- [ ]` task lists, quotes, code, **bold**, *italic*, links). It appears when the terminal is at least 100 columns wide; on narrower terminals press `Enter` for a full-screen detail view.
 - **Footer:** key hints, status messages, or the active prompt.
 
 The TUI refreshes automatically when another process (e.g. `ttask add` in another terminal) changes the database.
@@ -718,8 +775,9 @@ The TUI refreshes automatically when another process (e.g. `ttask add` in anothe
 | `Esc` | close detail → clear marks → clear filter → leave search |
 | `a` | quick-add (into the project you're viewing) |
 | `A` | add a subtask to the selected task |
-| `e` | edit the title |
+| `e` | edit the task: every field on one screen (see [Task editor](#task-editor)) |
 | `E` | edit notes in `$EDITOR` |
+| `n` | add a timestamped note |
 | `M` | modify with quick-add tokens (`due:+2d -+later !high`) |
 | `x` | toggle done (spawns the next instance for recurring tasks) |
 | `X` | cancel |
@@ -748,6 +806,12 @@ The TUI refreshes automatically when another process (e.g. `ttask add` in anothe
 | `O`, `Ctrl-o` | open another database file |
 | `L` | lock now (encrypted database) |
 | `Ctrl-l`, `F5` | reload |
+| `>` / `<` | due a day later / earlier (no due date: `>` makes it due tomorrow) |
+| `F` | focus mode with a Pomodoro timer |
+| `W` | weekly review · `]` / `[` next / previous step |
+| `]` / `[` | in the Agenda: next / previous week |
+| `R` | reports |
+| `Ctrl-t` | save the task as a template |
 | `:`, `Ctrl-p` | command palette |
 | `u`, `Ctrl-z` | undo |
 | `Ctrl-r`, `Ctrl-y` | redo |
@@ -775,13 +839,63 @@ Several keys open a one-line prompt in the footer. Editing keys work as in a she
 - **Waits on (`b`)** starts with the current blockers (`12 15`). Add ids to block on them, delete ids to unblock.
 - **Open database (`O`)** starts in the current database's folder. `Tab` completes file and folder names; with several matches it fills in their common prefix and lists them. The file is checked before anything is opened (see [§4](#4-creating-a-database)). An encrypted file uses the password saved in the keychain, or asks for it. The new database replaces the current one until you quit or open another; the next `ttask` command still uses your configured database.
 
+### Task editor
+
+`e` opens every field of the selected task in one form:
+
+```
+╭ Edit task #12 ──────────────────────────────────────────────────╮
+│Title      Paint the shed                                        │
+│Project    home                          #home                   │
+│Tags       +diy                                                  │
+│Priority   low                           low                     │
+│Due        sat                           Sat 17 Oct · in 2 days │
+│Scheduled                                none                    │
+│Wait                                     none                    │
+│Estimate   2h                            2h                      │
+│Repeat                                   none                    │
+│Notes (Markdown)                                                 │
+│╭───────────────────────────────────────────────────────────────╮│
+││Two coats.                                                     ││
+││- [ ] buy primer                                               ││
+│╰───────────────────────────────────────────────────────────────╯│
+╰─────────────────────────────────────────────────────────────────╯
+```
+
+`Tab` / `Shift-Tab` (or `↑` / `↓`) move between fields, and each field explains what it understood, or shows the mistake in red. In the notes, `Enter` starts a new line and the arrow keys move as in any editor. `Enter` in any other field, or `Ctrl-S` anywhere, saves. Only the fields you changed are written, as one undo step. If a field is invalid, the editor stays open on that field. `Esc` closes it; with unsaved changes it asks you to press `Esc` again. `E` still opens the notes in your own editor.
+
+### Agenda
+
+Select **Agenda** in the sidebar for a Monday–Sunday grid. Each day lists what is due that day, or scheduled that day if it has no due date, with done tasks dimmed. `h` / `l` move between days (left of Monday is the sidebar), `j` / `k` between tasks, and `]` / `[` between weeks. The selected day works like any list: `x`, `e`, `d`, `>` / `<` (move to the next or previous day) and the rest act on its tasks, and `a` adds a task due that day. `Enter` shows the task full-screen.
+
+### Weekly review
+
+`W` walks you through six steps; the header shows where you are and what to do:
+
+1. **Inbox:** give each task a project (`m`) or a date (`d`), or delete it.
+2. **Overdue:** reschedule, finish or drop each one.
+3. **Stale:** open tasks nobody touched for 30 days. Are they still worth doing?
+4. **Someday:** bring back what you can start now (`w`, then empty).
+5. **Projects without a next action:** projects whose open tasks are all waiting, blocked or missing. `a` adds a task to the selected one.
+6. **Done:** ttask remembers the date and shows it next time ("the last one was 7 days ago").
+
+`]` and `[` move between steps. Every key works as usual inside a step. `Esc` ends the review.
+
+### Focus mode
+
+`F` puts the selected task on screen with a large countdown. A work phase (25 minutes) runs the task's timer; then a short break (5 minutes) stops it, and after every fourth work phase the break is long (15 minutes). Each change of phase sends a desktop notification. `Space` pauses, `s` skips to the next phase, `Enter` ticks the selected checklist item (`j` / `k` choose it), `x` completes the task, and `Esc` leaves. The idle lock doesn't interrupt focus mode. Change the lengths under `[focus]` ([§16](#16-configuration-reference)).
+
+### Mouse
+
+Click a view in the sidebar, a task in the list, or a day or task in the agenda to select it. Click a task's checkbox (its first columns) to complete or reopen it, and click the selected task again on a narrow terminal for the full-screen detail. The wheel scrolls lists, help, history, reports and the palette. While ttask captures the mouse, select text with `Shift` held (most terminals), or turn it off with `mouse = false` under `[ui]`.
+
 ### Multi-select
 
-Mark tasks with `v` (or `Space` in the list), then `x`, `X`, `1`–`4`, `d`, `m`, `t`, `M` or `D` act on all marked tasks. `Esc` clears the marks.
+Mark tasks with `v` (or `Space` in the list), then `x`, `X`, `1`–`4`, `d`, `m`, `t`, `M`, `w`, `>` / `<` or `D` act on all marked tasks. `Esc` clears the marks.
 
 ### Command palette
 
-`:` opens a fuzzy finder over every action and every view, project, tag and saved filter. Type a few letters (`tdy` → *View: Today*, `undo`, `wor` → *Project: work*), pick with `↑`/`↓`, run with `Enter`.
+`:` opens a fuzzy finder over every action and every view, project, tag, saved filter and template. Type a few letters (`tdy` → *View: Today*, `undo`, `wor` → *Project: work*), pick with `↑`/`↓`, run with `Enter`.
 
 ### Idle lock
 
@@ -967,6 +1081,7 @@ password_cmd = "pass show ttask"     # first line of output is the password
 theme = "auto"                       # auto | dark | light | ascii
 keymap = "vim"                       # vim | simple
 show_detail_pane = "auto"            # auto (≥100 columns) | always | never
+mouse = true                         # clicks and the wheel in the TUI
 
 [keys]                               # rebind TUI actions
 done = "ctrl-x"
@@ -986,6 +1101,19 @@ tags = 1.0
 project = 1.0
 notes = 1.0
 blocked = -5.0
+
+[focus]                              # focus mode (F)
+work_minutes = 25
+short_break_minutes = 5
+long_break_minutes = 15
+long_break_every = 4
+
+[hooks]                              # see "Hooks" in §17
+on_add = "~/bin/ttask-hook"
+on_modify = "~/bin/ttask-hook"
+on_complete = "~/bin/ttask-hook"
+on_delete = "~/bin/ttask-hook"
+timeout_seconds = 10
 ```
 
 ### Rebinding keys
@@ -994,7 +1122,7 @@ Under `[keys]`, write `action = "key"`. The key replaces that action's default k
 
 **Keys:** a character (`x`, `J`, `/`), or `enter`, `esc`, `tab`, `shift-tab`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `backspace`, `f1`–`f12`, with optional `ctrl-` / `alt-` prefixes (`ctrl-f`, `alt-up`).
 
-**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `wait` `context` `open_link` `open_database` `block` `parent` `history` `copy_title` `copy_id` `sort` `reload` `lock` `help` `quit` `back`.
+**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `wait` `context` `open_link` `open_database` `block` `parent` `history` `copy_title` `copy_id` `sort` `reload` `lock` `annotate` `reports` `review` `next` `previous` `later` `earlier` `focus` `save_template` `help` `quit` `back`.
 
 ### Environment variables
 
@@ -1028,6 +1156,36 @@ Under `[keys]`, write `action = "key"`. The key replaces that action's default k
 | 2 | not found (task, project, database file) |
 | 3 | wrong or missing password |
 | 4 | database locked, corrupt, from a newer ttask, or not a ttask database |
+
+### Hooks
+
+Hooks run your own commands after ttask saves a change: to sync to another tool, log completions, or post a message. Set them under `[hooks]`:
+
+| Key | Runs after |
+| --- | --- |
+| `on_add` | tasks are created (including the next instance of a recurring task, and tasks from a template) |
+| `on_modify` | tasks are edited, cancelled or reopened |
+| `on_complete` | tasks are completed |
+| `on_delete` | tasks are deleted |
+
+The command gets JSON on stdin, once per event per action. Completing three tasks with `ttask done 1 2 3` runs `on_complete` once, with all three:
+
+```json
+{"event": "complete", "database": "/home/me/.local/share/ttask/ttask.db",
+ "tasks": [{"id": 12, "uid": "01J…", "title": "Pay rent", "status": "done", "...": "…"}]}
+```
+
+`TTASK_HOOK_EVENT` and `TTASK_DB` are set too. A hook runs after the change is committed and can't stop or alter it. If it fails or runs longer than `timeout_seconds` (default 10, then it's killed), ttask prints a warning; in the TUI the warning shows in the status line. Imports, `undo` and `redo` don't run hooks. The command is split like `$EDITOR` (quotes group words; a leading `~/` is your home directory) and runs without a shell.
+
+> Hooks see your tasks **decrypted**, even from an encrypted database. Only configure commands you trust.
+
+Example: log every completion to a file.
+
+```sh
+#!/bin/sh
+# ~/bin/ttask-done-log
+jq -r '.tasks[] | "\(now | todate) \(.title)"' >> ~/ttask-done.log
+```
 
 Examples:
 

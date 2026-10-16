@@ -38,6 +38,7 @@ clears a field and `-+tag` removes a tag).
 ```sh
 ttask ls                    # open tasks; views: inbox today next upcoming overdue waiting someday all logbook
 ttask ls next               # actionable tasks, most urgent first (--sort urgency anywhere)
+ttask ls agenda             # due (or scheduled) this week; a week grid in the TUI
 ttask ls '#work and (due:<=today or !>=2) and not +someday'
 ttask ls today --json       # every read command speaks JSON
 ttask show 12 --history
@@ -53,6 +54,9 @@ ttask search invoice
 ttask checklist 12 add passport ; ttask checklist 12 toggle 1
 ttask block 12 --on 9       # 12 waits on 9
 ttask timer start 12 ; ttask timer stop
+ttask annotate 12 called back      # timestamped line in the notes
+ttask report [--weeks 8]           # done per week, time per project, overdue trend
+ttask template save release --from 12 ; ttask template use release 'v2.1 due:fri'
 ttask project ls|add|rename|archive|rm ; ttask tag ls|rename|rm
 ttask filter save "This week" 'due:<=eow' ; ttask ls "This week"
 ttask context define work '#work' ; ttask context none   # focus every list on one area
@@ -63,7 +67,7 @@ ttask db info|backup|check|passwd|encrypt|decrypt|gc|gc-backups
 ttask gc ; ttask lock ; ttask config [path|init] ; ttask completions powershell
 ```
 
-Filter fields: `project tag status priority due sched created done text`,
+Filter fields: `project tag status priority due sched created modified done text`,
 `has:notes|due|subtasks`, `is:recurring|blocked|subtask|overdue`, `id:N`,
 bare words (full-text), `"quoted phrases"`, `and`/`or`/`not`, parentheses.
 Use `not +tag` (or `--` before an argument starting with `-`).
@@ -77,7 +81,7 @@ database (other files are refused before anything is written to them).
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | `j`/`k` `↓`/`↑` | move | `a` / `A` | quick-add / subtask |
-| `h`/`l` `Tab` | switch pane | `e` / `E` | edit title / notes in `$EDITOR` |
+| `h`/`l` `Tab` | switch pane | `e` / `E` | edit task (form) / notes in `$EDITOR` |
 | `g`/`G` | top / bottom | `M` | modify with quick-add tokens |
 | `Enter` | open / full-screen detail | `x` / `X` | toggle done / cancel |
 | `/` | filter view | `1`–`4` | priority low…urgent |
@@ -92,7 +96,14 @@ database (other files are refused before anything is written to them).
 | `b` | waits on (dependencies) | `P` | make subtask of |
 | `H` | task history | `y` / `Y` | copy title / id |
 | `Ctrl-s` | cycle sort | `L` | lock now (encrypted) |
+| `n` | timestamped note | `>` / `<` | due a day later / earlier |
+| `W` | weekly review (`]` `[` steps) | `F` | focus mode (Pomodoro) |
+| `R` | reports | `Ctrl-t` | save task as template |
 | `?` | help | `q` | quit |
+
+The sidebar's **Agenda** view is a Monday–Sunday grid (`h`/`l` days, `]`/`[`
+weeks). The mouse selects views, tasks and agenda cells, toggles checkboxes and
+scrolls; `[ui] mouse = false` turns it off. Notes render as Markdown.
 
 `keymap = "simple"` drops the vim keys (reorder with `Alt-↑/↓`); any action
 can be rebound under `[keys]` in the config.
@@ -108,7 +119,10 @@ path`, override with `TTASK_CONFIG`). Highlights:
   `security.password_cmd = "pass show ttask"`; `security.idle_lock_minutes`
   re-locks the TUI.
 - `ui.theme = auto|dark|light|ascii`, `ui.keymap = vim|simple`,
-  `ui.show_detail_pane = auto|always|never`. `NO_COLOR` is honoured.
+  `ui.show_detail_pane = auto|always|never`, `ui.mouse`. `NO_COLOR` is honoured.
+- `[focus]` Pomodoro lengths; `[hooks] on_add / on_modify / on_complete /
+  on_delete` run your commands with the changed tasks as JSON on stdin (they
+  see decrypted data, so configure only commands you trust).
 
 For an encrypted database the password comes from `--password-file`, else
 `password_cmd`, the keychain, `TTASK_PASSWORD` (warns), then a prompt. A
