@@ -82,7 +82,9 @@ pub enum SidebarEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
-    Add { parent: Option<TaskId> },
+    Add {
+        parent: Option<TaskId>,
+    },
     Modify(Vec<TaskId>),
     Due(Vec<TaskId>),
     Move(Vec<TaskId>),
@@ -98,6 +100,9 @@ pub enum PromptKind {
     Block(TaskId),
     Parent(TaskId),
     Annotate(TaskId),
+    SaveTemplate(TaskId),
+    /// The template name, and whether it is a project template.
+    UseTemplate(String, bool),
 }
 
 impl PromptKind {
@@ -120,6 +125,9 @@ impl PromptKind {
             PromptKind::Block(_) => "Waits on (task ids)",
             PromptKind::Parent(_) => "Subtask of (task id, none)",
             PromptKind::Annotate(_) => "Note",
+            PromptKind::SaveTemplate(_) => "Save as template named",
+            PromptKind::UseTemplate(_, false) => "New task from template (title and tokens)",
+            PromptKind::UseTemplate(_, true) => "Create the template's tasks in project",
         }
     }
 
@@ -875,6 +883,19 @@ impl Tui {
                     Some(Target::View(view)) => self.open_view(view),
                     Some(Target::Context(name)) => self.switch_context(name.as_deref()),
                     Some(Target::Link(link)) => self.open_link(&link),
+                    Some(Target::Template(name)) => match self.app.template(&name) {
+                        Ok(t) => {
+                            let is_project = t.kind == ttask_app::TemplateKind::Project;
+                            let initial = if is_project {
+                                t.project.clone().unwrap_or_default()
+                            } else {
+                                t.tasks.first().map(|t| t.title.clone()).unwrap_or_default()
+                            };
+                            self.open_prompt(PromptKind::UseTemplate(name, is_project), &initial);
+                            return std::mem::replace(&mut self.mode, Mode::Normal);
+                        }
+                        Err(e) => self.error(e.to_string()),
+                    },
                     None => {}
                 }
                 Mode::Normal
@@ -1066,6 +1087,47 @@ impl Tui {
                 }
             }
             PromptKind::Block(id) => self.set_blockers(*id, &text),
+            PromptKind::SaveTemplate(id) => self
+                .app
+                .save_task_template(&text, *id)
+                .map(|t| Some(format!("Saved template `{}`", t.name)))
+                .map_err(|e| e.to_string()),
+            PromptKind::UseTemplate(name, is_project) => {
+                let current = self
+                    .current_project()
+                    .and_then(|id| {
+                        self.app
+                            .projects(false)
+                            .ok()?
+                            .into_iter()
+                            .find(|p| p.id == id)
+                    })
+                    .map(|p| p.path);
+                let has_project = self.app.template(name).is_ok_and(|t| t.project.is_some());
+                let opts = if *is_project {
+                    ttask_app::UseTemplate {
+                        project: Some(text.trim().to_owned()).filter(|p| !p.is_empty()),
+                        ..Default::default()
+                    }
+                } else {
+                    ttask_app::UseTemplate {
+                        text: Some(text.clone()),
+                        // A template without a project lands in the project you are viewing.
+                        project: current.filter(|_| !has_project),
+                        ..Default::default()
+                    }
+                };
+                self.app
+                    .use_template(name, &opts)
+                    .map(|created| {
+                        Some(format!(
+                            "Created {} task{} from `{name}`",
+                            created.len(),
+                            plural(created.len())
+                        ))
+                    })
+                    .map_err(|e| e.to_string())
+            }
             PromptKind::Annotate(id) => self
                 .app
                 .annotate(*id, &text)
@@ -1653,6 +1715,12 @@ impl Tui {
                     self.open_prompt(PromptKind::Annotate(id), "");
                 }
             }
+            Action::SaveTemplate => {
+                if let Some(task) = self.selected_task() {
+                    let (id, name) = (task.id, task.title.to_lowercase());
+                    self.open_prompt(PromptKind::SaveTemplate(id), &name);
+                }
+            }
             Action::Focus => {
                 if let Some(task) = self.selected_task().filter(|t| t.is_open()) {
                     let id = task.id;
@@ -1994,6 +2062,21 @@ impl Tui {
                 hint: self.keymap.keys_for(*action),
                 target: Target::Action(*action),
             });
+        }
+        if let Ok(templates) = self.app.templates() {
+            for t in templates {
+                let hint = match t.kind {
+                    ttask_app::TemplateKind::Task => format!("{} task(s)", t.task_count()),
+                    ttask_app::TemplateKind::Project => {
+                        format!("project {}", t.project.as_deref().unwrap_or(""))
+                    }
+                };
+                items.push(Item {
+                    label: format!("Template: {}", t.name),
+                    hint,
+                    target: Target::Template(t.name),
+                });
+            }
         }
         if let Ok(filters) = self.app.saved_filters() {
             for filter in filters {

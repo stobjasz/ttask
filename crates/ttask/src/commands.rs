@@ -281,6 +281,7 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Project { action } => projects(&ctx, action)?,
         Command::Tag { action } => tags(&ctx, action)?,
         Command::Filter { action } => filters(&ctx, action)?,
+        Command::Template { action } => templates(&ctx, action)?,
         Command::Import {
             file,
             format,
@@ -1153,6 +1154,92 @@ fn filters(ctx: &Ctx, action: Option<FilterAction>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn templates(ctx: &Ctx, action: Option<TemplateAction>) -> anyhow::Result<()> {
+    let mut app = ctx.open()?;
+    let describe = |t: &ttask_app::Template| {
+        let n = t.task_count();
+        match t.kind {
+            ttask_app::TemplateKind::Task => format!(
+                "task \"{}\"{}",
+                t.tasks.first().map_or("", |t| t.title.as_str()),
+                if n > 1 {
+                    format!(" with {} subtask(s)", n - 1)
+                } else {
+                    String::new()
+                }
+            ),
+            ttask_app::TemplateKind::Project => format!(
+                "project {} with {n} task(s)",
+                t.project.as_deref().unwrap_or("?")
+            ),
+        }
+    };
+    match action.unwrap_or(TemplateAction::Ls) {
+        TemplateAction::Ls => {
+            let templates = app.templates()?;
+            if ctx.json {
+                return ctx.print_json(&templates);
+            }
+            if templates.is_empty() {
+                ctx.say("No templates. Save one with `ttask template save <name> --from <id>`.");
+            }
+            for t in &templates {
+                println!("{}  {}", t.name, ctx.painter.paint(Tone::Dim, &describe(t)));
+            }
+        }
+        TemplateAction::Save {
+            name,
+            from,
+            project,
+        } => {
+            let template = match (from, project) {
+                (Some(id), _) => app.save_task_template(&name, id)?,
+                (None, Some(path)) => app.save_project_template(&name, &path)?,
+                (None, None) => bail!("pass --from <id> or --project <path>"),
+            };
+            ctx.say(format!(
+                "Saved template `{}`: {}",
+                template.name,
+                describe(&template)
+            ));
+        }
+        TemplateAction::Use {
+            name,
+            text,
+            project,
+            start,
+        } => {
+            let start = start
+                .map(|s| ttask_core::date::parse_date(&s, app.today()).map(|d| d.date))
+                .transpose()?;
+            let created = app.use_template(
+                &name,
+                &ttask_app::UseTemplate {
+                    start,
+                    text: (!text.is_empty()).then(|| text.join(" ")),
+                    project,
+                },
+            )?;
+            if ctx.json {
+                return ctx.print_json(&created);
+            }
+            let today = app.today();
+            for task in &created {
+                ctx.say(format!(
+                    "Created {}",
+                    task_line(task, 0, today, &ctx.painter).trim_start()
+                ));
+            }
+        }
+        TemplateAction::Show { name } => ctx.print_json(&app.template(&name)?)?,
+        TemplateAction::Rm { name } => {
+            app.delete_template(&name)?;
+            ctx.say(format!("Deleted template `{name}`"));
+        }
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------ import / export
 
 const AGE_MAGIC: &[u8] = b"age-encryption.org/v1";
@@ -1211,11 +1298,16 @@ fn import(
     }
     let prefix = if dry_run { "Would import" } else { "Imported" };
     ctx.say(format!(
-        "{prefix}: {} new, {} updated task(s), {} new project(s), {} filter(s){}",
+        "{prefix}: {} new, {} updated task(s), {} new project(s), {} filter(s){}{}",
         report.tasks_created,
         report.tasks_updated,
         report.projects_created,
         report.filters,
+        if report.templates > 0 {
+            format!(", {} template(s)", report.templates)
+        } else {
+            String::new()
+        },
         if dry_run {
             ""
         } else {

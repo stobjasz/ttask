@@ -15,6 +15,8 @@ pub enum Target {
     Context(Option<String>),
     /// Open a link from the selected task.
     Link(String),
+    /// Create tasks from the named template.
+    Template(String),
 }
 
 #[derive(Debug, Clone)]

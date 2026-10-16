@@ -741,3 +741,85 @@ fn report_buckets_completions_time_and_overdue_by_week() {
     assert!(text.contains("  2026-W42  ██████████ 2"), "{text}");
     assert!(text.contains("  work  ██████████ 24h"), "{text}");
 }
+
+#[test]
+fn task_templates_keep_subtasks_checklists_and_relative_dates() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let root = app
+        .add("Release #work !high due:+3d ~2h +ship", None, None)
+        .unwrap();
+    app.checklist_add(root.id, "tag the build").unwrap();
+    app.add("Changelog due:+1d", None, Some(root.id)).unwrap();
+    let template = app.save_task_template("release", root.id).unwrap();
+    assert_eq!(template.task_count(), 2);
+    assert_eq!(template.tasks[0].due_in_days, Some(3));
+    drop(app);
+
+    // Ten days later, with a new title and due date for the main task.
+    let mut app = app_on(&dir, date(2026, 10, 25));
+    let created = app
+        .use_template(
+            "Release",
+            &UseTemplate {
+                text: Some("Release v2 due:+7d".into()),
+                ..UseTemplate::default()
+            },
+        )
+        .unwrap();
+    let new = &created[0];
+    assert_eq!(new.title, "Release v2");
+    assert_eq!(new.due_date, Some(date(2026, 11, 1)));
+    assert_eq!(new.project.as_deref(), Some("work"));
+    assert_eq!(new.priority.name(), "high");
+    assert_eq!(new.estimate_min, Some(120));
+    assert_eq!(new.tags, ["ship"]);
+    let detail = app.detail(new.id).unwrap();
+    assert_eq!(detail.checklist[0].text, "tag the build");
+    assert_eq!(detail.subtasks[0].title, "Changelog");
+    assert_eq!(detail.subtasks[0].due_date, Some(date(2026, 10, 26)));
+
+    app.undo().unwrap();
+    assert!(app.task(new.id).is_err(), "one undo removes the whole tree");
+    assert!(app.task(detail.subtasks[0].id).is_err());
+}
+
+#[test]
+fn project_templates_copy_open_tasks_into_a_new_project() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    app.add("Laptop #onboarding", None, None).unwrap();
+    app.add("Accounts #onboarding due:+2d", None, None).unwrap();
+    let done = app.add("Old step #onboarding", None, None).unwrap();
+    app.complete(&[done.id]).unwrap();
+    app.save_project_template("onboarding", "onboarding")
+        .unwrap();
+    assert!(app.save_project_template("empty", "nope").is_err());
+
+    let created = app
+        .use_template(
+            "onboarding",
+            &UseTemplate {
+                project: Some("onboarding/anna".into()),
+                start: Some(date(2026, 11, 2)),
+                ..UseTemplate::default()
+            },
+        )
+        .unwrap();
+    let mut titles: Vec<&str> = created.iter().map(|t| t.title.as_str()).collect();
+    titles.sort();
+    assert_eq!(titles, ["Accounts", "Laptop"]);
+    assert!(
+        created
+            .iter()
+            .all(|t| t.project.as_deref() == Some("onboarding/anna"))
+    );
+    let accounts = created.iter().find(|t| t.title == "Accounts").unwrap();
+    assert_eq!(accounts.due_date, Some(date(2026, 11, 4)));
+    assert_eq!(app.templates().unwrap().len(), 1);
+    app.delete_template("onboarding").unwrap();
+    assert!(
+        app.use_template("onboarding", &UseTemplate::default())
+            .is_err()
+    );
+}

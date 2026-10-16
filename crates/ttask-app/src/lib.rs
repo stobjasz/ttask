@@ -8,6 +8,7 @@ pub mod editor;
 pub mod io;
 pub mod launch;
 mod reports;
+mod templates;
 mod views;
 
 use jiff::ToSpan;
@@ -28,6 +29,7 @@ use ttask_store::{
 pub use backups::{BackupPolicy, RotationReport};
 pub use detail::TaskDetail;
 pub use reports::{ProjectTime, Report, WeekCount};
+pub use templates::{Template, TemplateKind, TemplateTask, UseTemplate};
 pub use ttask_store::{Reminder, TimeEntry};
 pub use views::{View, ViewKind, arrange_tree};
 

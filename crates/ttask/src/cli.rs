@@ -205,6 +205,12 @@ pub enum Command {
         #[command(subcommand)]
         action: Option<FilterAction>,
     },
+    /// Reusable tasks and projects
+    #[command(visible_alias = "templates")]
+    Template {
+        #[command(subcommand)]
+        action: Option<TemplateAction>,
+    },
     /// Import tasks from a file
     Import {
         file: PathBuf,
@@ -342,6 +348,40 @@ pub enum FilterAction {
         query: Vec<String>,
     },
     /// Delete a saved filter
+    Rm { name: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TemplateAction {
+    /// List templates
+    Ls,
+    /// Save a task (with subtasks and checklists), or a project's open tasks
+    Save {
+        name: String,
+        /// The task to save
+        #[arg(long, value_name = "ID", required_unless_present = "project")]
+        from: Option<TaskId>,
+        /// Save this project's open tasks instead
+        #[arg(long, value_name = "PATH", conflicts_with = "from")]
+        project: Option<String>,
+    },
+    /// Create tasks from a template: `ttask template use release 'v2.1 due:fri'`
+    Use {
+        name: String,
+        /// For a task template: quick-add text for the main task (a new
+        /// title, due date, tags…)
+        #[arg(num_args = 0..)]
+        text: Vec<String>,
+        /// Create the tasks in this project instead of the template's
+        #[arg(long, value_name = "PATH")]
+        project: Option<String>,
+        /// Count the template's dates from this day instead of today
+        #[arg(long, value_name = "DATE")]
+        start: Option<String>,
+    },
+    /// Print a template as JSON
+    Show { name: String },
+    /// Delete a template
     Rm { name: String },
 }
 

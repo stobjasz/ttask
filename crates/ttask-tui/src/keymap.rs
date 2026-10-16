@@ -72,6 +72,7 @@ pub enum Action {
     Later,
     Earlier,
     Focus,
+    SaveTemplate,
     Help,
     Quit,
     Back,
@@ -151,6 +152,11 @@ impl Action {
         (Action::Later, "later", "Due a day later"),
         (Action::Earlier, "earlier", "Due a day earlier"),
         (Action::Focus, "focus", "Focus mode (Pomodoro)"),
+        (
+            Action::SaveTemplate,
+            "save_template",
+            "Save task as template",
+        ),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
         (Action::Back, "back", "Back / clear filter"),
@@ -350,6 +356,7 @@ impl Keymap {
         bind(&[">"], Action::Later);
         bind(&["<"], Action::Earlier);
         bind(&["F"], Action::Focus);
+        bind(&["ctrl-t"], Action::SaveTemplate);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);

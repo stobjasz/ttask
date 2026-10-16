@@ -44,6 +44,8 @@ pub struct ExportDoc {
     pub saved_filters: Vec<ExportFilter>,
     #[serde(default)]
     pub history: Vec<ExportEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<crate::Template>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +135,7 @@ pub struct ImportBatch {
     pub tasks: Vec<ImportTask>,
     pub saved_filters: Vec<ExportFilter>,
     pub history: Vec<ExportEvent>,
+    pub templates: Vec<crate::Template>,
     /// Problems that did not stop the import.
     pub warnings: Vec<String>,
 }
@@ -177,6 +180,7 @@ pub struct ImportReport {
     pub tasks_updated: usize,
     pub projects_created: usize,
     pub filters: usize,
+    pub templates: usize,
     pub warnings: Vec<String>,
     pub dry_run: bool,
 }
@@ -234,6 +238,7 @@ impl From<ExportDoc> for ImportBatch {
             tasks,
             saved_filters: doc.saved_filters,
             history: doc.history,
+            templates: doc.templates,
             warnings: Vec::new(),
         }
     }
@@ -368,6 +373,7 @@ impl App {
                 })
                 .collect(),
             history,
+            templates: self.templates()?,
         })
     }
 
@@ -561,6 +567,12 @@ impl App {
             for filter in &batch.saved_filters {
                 db.save_filter(&filter.name, &filter.query)?;
                 report.filters += 1;
+            }
+            for template in &batch.templates {
+                let body = serde_json::to_string(template)
+                    .map_err(|e| AppError::Invalid(format!("template: {e}")))?;
+                db.save_template(&template.name, &body, now)?;
+                report.templates += 1;
             }
             report.projects_created = db.projects(true)?.len().saturating_sub(projects_before);
             if dry_run {

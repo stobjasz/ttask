@@ -19,6 +19,7 @@ mod reports;
 mod saved_filters;
 mod tags;
 mod tasks;
+mod templates;
 mod transfer;
 
 pub use db::Db;
@@ -33,6 +34,7 @@ pub use open::{APPLICATION_ID, DbMode, FileState, PasswordSource, Store, detect,
 pub use query::{QueryCtx, SearchHit, TaskQuery, TaskSort};
 pub use reports::{DueRow, TimeRow};
 pub use tasks::TaskFields;
+pub use templates::TemplateRow;
 pub use transfer::{EventRecord, ProjectRecord};
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

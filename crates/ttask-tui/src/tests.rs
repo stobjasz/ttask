@@ -939,7 +939,9 @@ fn focus_mode_runs_pomodoros_with_the_timer() {
     let notes: Rc<RefCell<Vec<String>>> = Rc::default();
     let sink = notes.clone();
     let settings = Settings {
-        notify: Some(Box::new(move |title, _| sink.borrow_mut().push(title.to_owned()))),
+        notify: Some(Box::new(move |title, _| {
+            sink.borrow_mut().push(title.to_owned())
+        })),
         ..Settings::default()
     };
     let store = Store::create(&dir.path().join("t.db"), None).unwrap();
@@ -985,4 +987,44 @@ fn focus_mode_runs_pomodoros_with_the_timer() {
     assert!(matches!(tui.mode, Mode::Normal));
     assert!(!tui.app.task(id).unwrap().is_open());
     assert!(!running(&tui));
+}
+
+#[test]
+fn templates_are_saved_with_ctrl_t_and_used_from_the_palette() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Weekly report due:today +work");
+    let id = tui.tasks[0].0.id;
+    tui.app.checklist_add(id, "numbers").unwrap();
+    ctrl(&mut tui, 't');
+    match &tui.mode {
+        Mode::Prompt(p) => assert_eq!(p.input.text(), "weekly report"),
+        _ => panic!("name prompt"),
+    }
+    ctrl(&mut tui, 'u');
+    press(&mut tui, "report");
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(tui.app.templates().unwrap()[0].name, "report");
+
+    press(&mut tui, ":");
+    press(&mut tui, "template: report");
+    key(&mut tui, KeyCode::Enter);
+    match &tui.mode {
+        Mode::Prompt(p) => assert_eq!(p.input.text(), "Weekly report"),
+        _ => panic!("use prompt"),
+    }
+    press(&mut tui, " (Q4)");
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(tui.mode, Mode::Normal));
+    let made = titles(&tui);
+    assert!(made.contains(&"Weekly report (Q4)".to_owned()), "{made:?}");
+    let new = tui
+        .tasks
+        .iter()
+        .find(|(t, _)| t.title == "Weekly report (Q4)")
+        .unwrap()
+        .0
+        .clone();
+    assert_eq!(new.tags, ["work"]);
+    assert_eq!(tui.app.detail(new.id).unwrap().checklist[0].text, "numbers");
 }

@@ -1005,3 +1005,54 @@ fn files_that_are_not_ttask_databases_are_refused() {
         .stderr(predicate::str::contains("not a ttask database"));
     assert_eq!(fs::read_to_string(&notes).unwrap(), "hello");
 }
+
+#[test]
+fn templates_from_the_command_line_survive_export() {
+    let env = Env::new();
+    init_plain(&env);
+    let root = add_json(&env, "Release #work due:+2d");
+    let id = root["id"].to_string();
+    env.cmd()
+        .args(["add", "--parent", &id, "Changelog"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["template", "save", "release", "--from", &id])
+        .assert()
+        .success()
+        .stdout("Saved template `release`: task \"Release\" with 1 subtask(s)\n");
+    env.cmd()
+        .args(["template", "use", "release", "Release v2", "+big"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created").and(predicate::str::contains("Release v2")));
+    let titles = ls_titles(&env, &["#work"]);
+    assert_eq!(
+        titles.iter().filter(|t| *t == "Changelog").count(),
+        2,
+        "{titles:?}"
+    );
+
+    let export = env.dir.path().join("all.json");
+    env.cmd()
+        .args(["export", "--output"])
+        .arg(&export)
+        .assert()
+        .success();
+    let other = Env::new();
+    init_plain(&other);
+    other
+        .cmd()
+        .arg("import")
+        .arg(&export)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 template(s)"));
+    other
+        .cmd()
+        .args(["template", "ls"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("release"));
+    env.cmd().args(["template", "use", "nope"]).assert().code(2);
+}
