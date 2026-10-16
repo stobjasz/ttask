@@ -8,8 +8,8 @@ use ttask_core::jiff::civil::{Date, date};
 use ttask_core::jiff::tz::TimeZone;
 use ttask_core::{NewTask, Priority, Status};
 use ttask_store::{
-    DbMode, EventKind, FileState, PasswordSource, QueryCtx, SCHEMA_VERSION, Store, StoreError,
-    TaskFields, TaskQuery, detect,
+    APPLICATION_ID, DbMode, EventKind, FileState, PasswordSource, QueryCtx, SCHEMA_VERSION, Store,
+    StoreError, TaskFields, TaskQuery, detect, inspect,
 };
 
 const PASSWORD: &str = "correct horse battery";
@@ -184,6 +184,85 @@ fn garbage_file_is_not_a_database() {
     fs::write(&path, b"SQLite format 3\0 but not really a database at all").unwrap();
     let err = open(&path).unwrap_err();
     assert!(matches!(err, StoreError::NotADatabase), "{err:?}");
+}
+
+/// A password source that fails the test if it is asked.
+struct NoPassword;
+
+impl PasswordSource for NoPassword {
+    fn password(&mut self, _attempt: u32) -> ttask_store::Result<SecretString> {
+        panic!("asked for a password");
+    }
+}
+
+fn assert_not_ttask(err: StoreError, reason: &str) {
+    match &err {
+        StoreError::NotTtask { reason: r, .. } => assert!(r.contains(reason), "{err}"),
+        other => panic!("expected NotTtask, got {other:?}"),
+    }
+}
+
+#[test]
+fn other_files_are_refused_without_a_password_prompt() {
+    let dir = TempDir::new().unwrap();
+    let text = dir.path().join("notes.txt");
+    fs::write(&text, "just some notes\n").unwrap();
+    assert_not_ttask(Store::open(&text, &mut NoPassword).unwrap_err(), "neither");
+    assert_not_ttask(inspect(&text).unwrap_err(), "neither");
+
+    let empty = dir.path().join("empty.db");
+    fs::write(&empty, b"").unwrap();
+    assert_not_ttask(Store::open(&empty, &mut NoPassword).unwrap_err(), "empty");
+
+    assert_not_ttask(inspect(dir.path()).unwrap_err(), "directory");
+    assert!(matches!(
+        inspect(&dir.path().join("nope.db")).unwrap_err(),
+        StoreError::Missing(_)
+    ));
+}
+
+#[test]
+fn another_applications_sqlite_database_is_left_untouched() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("other.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE songs (id INTEGER PRIMARY KEY, name TEXT);")
+            .unwrap();
+    }
+    let before = fs::read(&path).unwrap();
+    assert_not_ttask(inspect(&path).unwrap_err(), "another application");
+    assert_not_ttask(
+        Store::open(&path, &mut NoPassword).unwrap_err(),
+        "another application",
+    );
+    assert_eq!(fs::read(&path).unwrap(), before, "nothing was migrated");
+
+    // Same with a user_version that looks like a ttask schema, and with a
+    // foreign application id.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+    }
+    assert_not_ttask(inspect(&path).unwrap_err(), "another application");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "application_id", 42).unwrap();
+    }
+    assert_not_ttask(inspect(&path).unwrap_err(), "another application");
+}
+
+#[test]
+fn databases_carry_the_application_id_and_inspect_reports_the_mode() {
+    both_modes(|path, mode| {
+        drop(create(path, mode));
+        assert_eq!(inspect(path).unwrap(), mode);
+        let conn = raw_conn(path, (mode == DbMode::Encrypted).then_some(PASSWORD));
+        let id: i32 = conn
+            .pragma_query_value(None, "application_id", |r| r.get(0))
+            .unwrap();
+        assert_eq!(id, APPLICATION_ID);
+    });
 }
 
 #[test]

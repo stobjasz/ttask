@@ -27,7 +27,7 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
         return;
     }
     let footer_height = match &tui.mode {
-        Mode::Prompt(p) if matches!(p.kind, PromptKind::Add { .. } | PromptKind::Modify(_)) => 2,
+        Mode::Prompt(p) if p.kind.has_preview() => 2,
         _ => 1,
     };
     let [header, body, footer] = Layout::vertical([
@@ -63,6 +63,11 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
     draw_footer(f, tui, footer);
     match &tui.mode {
         Mode::Help { scroll } => draw_help(f, tui, area, *scroll),
+        Mode::History {
+            title,
+            entries,
+            scroll,
+        } => draw_history(f, tui, area, title, entries, *scroll),
         Mode::Palette(_) => draw_palette(f, tui, area),
         Mode::Confirm { message, .. } => draw_confirm(f, tui, area, message),
         _ => {}
@@ -97,6 +102,12 @@ fn draw_header(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
     }
     if !tui.filter.is_empty() {
         left.push(Span::styled(format!("  / {}", tui.filter), tui.theme.today));
+    }
+    if tui.sort_override.is_some() {
+        left.push(Span::styled(
+            format!("  by {}", crate::state::sort_name(tui.sort())),
+            tui.theme.dim,
+        ));
     }
     if !tui.marked.is_empty() {
         left.push(Span::styled(
@@ -587,7 +598,16 @@ fn draw_footer(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
                 Span::raw(prompt.input.display()),
             ]);
             let mut lines = vec![input_line];
-            if area.height > 1 {
+            if area.height > 1 && prompt.kind == PromptKind::OpenDatabase {
+                lines.push(match (&prompt.error, &prompt.hint) {
+                    (Some(err), _) => Line::from(Span::styled(format!("  {err}"), t.error)),
+                    (None, Some(hint)) => Line::from(Span::styled(format!("  {hint}"), t.dim)),
+                    (None, None) => Line::from(Span::styled(
+                        "  Tab completes · Enter opens · Esc cancels; only ttask databases open",
+                        t.dim,
+                    )),
+                });
+            } else if area.height > 1 {
                 lines.push(preview_line(
                     tui,
                     &prompt.kind,
@@ -616,8 +636,8 @@ fn draw_footer(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
                 (Action::Add, "add"),
                 (Action::Edit, "edit"),
                 (Action::ToggleDone, "done"),
-                (Action::Due, "due"),
                 (Action::Filter, "filter"),
+                (Action::Search, "search"),
                 (Action::Palette, "palette"),
                 (Action::Help, "help"),
                 (Action::Quit, "quit"),
@@ -770,13 +790,50 @@ fn draw_help(f: &mut Frame<'_>, tui: &Tui, area: Rect, scroll: u16) {
     );
 }
 
+fn draw_history(
+    f: &mut Frame<'_>,
+    tui: &Tui,
+    area: Rect,
+    title: &str,
+    entries: &[(String, String)],
+    scroll: u16,
+) {
+    let rect = centered(area, 72, area.height.saturating_sub(4));
+    f.render_widget(Clear, rect);
+    let heading = format!("History: {} (Esc to close)", truncate(title, 40));
+    let block = pane_block(tui, &heading, true);
+    let lines: Vec<Line> = if entries.is_empty() {
+        vec![Line::from(Span::styled(
+            "No changes recorded",
+            tui.theme.dim,
+        ))]
+    } else {
+        entries
+            .iter()
+            .map(|(at, what)| {
+                Line::from(vec![
+                    Span::styled(format!("{at}  "), tui.theme.dim),
+                    Span::raw(what.clone()),
+                ])
+            })
+            .collect()
+    };
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        rect,
+    );
+}
+
 fn draw_palette(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
     let Mode::Palette(palette) = &tui.mode else {
         return;
     };
     let rect = centered(area, 64, 18);
     f.render_widget(Clear, rect);
-    let block = pane_block(tui, "Command palette", true);
+    let block = pane_block(tui, palette.title, true);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let [input_area, list_area] =

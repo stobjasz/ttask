@@ -94,32 +94,46 @@ pub enum Command {
         parent: Option<TaskId>,
     },
     /// Complete tasks (recurring tasks spawn their next instance)
-    Done {
-        #[arg(required = true, value_name = "ID")]
-        ids: Vec<TaskId>,
-    },
+    Done(Targets),
     /// Reopen done or cancelled tasks
-    Reopen {
-        #[arg(required = true, value_name = "ID")]
-        ids: Vec<TaskId>,
-    },
+    Reopen(Targets),
     /// Cancel tasks (closed, but not done)
-    Cancel {
-        #[arg(required = true, value_name = "ID")]
-        ids: Vec<TaskId>,
-    },
+    Cancel(Targets),
     /// Delete tasks and their subtasks (undoable; purged by `gc` after 30 days)
     #[command(visible_alias = "delete")]
-    Rm {
-        #[arg(required = true, value_name = "ID")]
-        ids: Vec<TaskId>,
-    },
+    Rm(Targets),
     /// Move a recurring task to its next occurrence without completing it
     Skip { id: TaskId },
     /// Revert the last action
     Undo,
     /// Re-apply the last undone action
     Redo,
+    /// Print how many tasks `ls` would list, for prompts and status bars
+    Count {
+        /// A view, saved filter name or filter query, as for `ls`
+        #[arg(num_args = 0..)]
+        query: Vec<String>,
+        /// Include done, cancelled, waiting and someday tasks
+        #[arg(long, short)]
+        all: bool,
+        /// Ignore the active context
+        #[arg(long)]
+        no_context: bool,
+    },
+    /// Open a link (http, https, mailto) from a task's title, notes or
+    /// checklist in the browser or mail client
+    Open {
+        id: TaskId,
+        /// Which link, when the task has several (1 = first)
+        #[arg(value_name = "N")]
+        n: Option<usize>,
+        /// Open every link
+        #[arg(long, conflicts_with = "n")]
+        all: bool,
+        /// Print the links instead of opening them
+        #[arg(long)]
+        print: bool,
+    },
     /// Full-text search over titles and notes
     Search {
         #[arg(required = true, num_args = 1..)]
@@ -223,6 +237,20 @@ pub enum Command {
     },
     /// Print shell completions
     Completions { shell: clap_complete::Shell },
+}
+
+/// The tasks `done`, `reopen`, `cancel` and `rm` act on.
+#[derive(Debug, Args)]
+pub struct Targets {
+    #[arg(value_name = "ID", required_unless_present = "filter")]
+    pub ids: Vec<TaskId>,
+    /// Every task matching this filter (as `ls` shows it, within the
+    /// active context) instead of ids; one undo step reverts them all
+    #[arg(long, value_name = "QUERY", conflicts_with = "ids")]
+    pub filter: Option<String>,
+    /// Do not ask before changing more than one task by --filter
+    #[arg(long, short, requires = "filter")]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -347,6 +375,8 @@ pub enum ImportFormat {
     Todoist,
     Ticktick,
     Taskwarrior,
+    /// `gh issue list --json …` or the REST API's issue list
+    Github,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

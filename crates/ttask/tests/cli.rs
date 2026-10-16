@@ -843,3 +843,165 @@ fn taskwarrior_export_is_detected_and_imported() {
     assert_eq!(tasks[0]["uid"], "a1");
     assert_eq!(tasks[0]["priority"], 2);
 }
+
+#[test]
+fn github_issues_are_detected_and_reimport_updates() {
+    let env = Env::new();
+    init_plain(&env);
+    let path = env.dir.path().join("issues.json");
+    let issues = |title: &str| {
+        format!(
+            r#"[{{"number":7,"title":"{title}","body":"Details","url":"https://github.com/acme/rocket/issues/7","state":"OPEN","labels":[{{"name":"bug"}}],"createdAt":"2026-10-01T10:00:00Z"}},
+{{"number":8,"title":"Done already","body":"","url":"https://github.com/acme/rocket/issues/8","state":"CLOSED","labels":[],"closedAt":"2026-10-02T10:00:00Z"}}]"#
+        )
+    };
+    fs::write(&path, issues("Crash on start")).unwrap();
+    env.cmd()
+        .arg("import")
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported: 2 new, 0 updated"));
+    fs::write(&path, issues("Crash on start (renamed)")).unwrap();
+    env.cmd()
+        .arg("import")
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported: 0 new, 2 updated"));
+    let out = env
+        .cmd()
+        .args(["--json", "ls", "#rocket"])
+        .assert()
+        .success();
+    let tasks = json(&out.get_output().stdout);
+    assert_eq!(tasks.as_array().unwrap().len(), 1, "{tasks}");
+    assert_eq!(tasks[0]["title"], "Crash on start (renamed)");
+    assert_eq!(tasks[0]["tags"][0], "bug");
+
+    // The issue URL is the first link, so `ttask open` goes to the issue.
+    let id = tasks[0]["id"].to_string();
+    env.cmd()
+        .args(["open", &id, "--print"])
+        .assert()
+        .success()
+        .stdout("https://github.com/acme/rocket/issues/7\n");
+}
+
+#[test]
+fn count_prints_a_number() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "One due:today +x");
+    add_json(&env, "Two +x");
+    add_json(&env, "Three");
+    env.cmd().arg("count").assert().success().stdout("3\n");
+    env.cmd()
+        .args(["count", "+x"])
+        .assert()
+        .success()
+        .stdout("2\n");
+    env.cmd()
+        .args(["count", "today"])
+        .assert()
+        .success()
+        .stdout("1\n");
+    let out = env.cmd().args(["--json", "count", "-a"]).assert().success();
+    assert_eq!(json(&out.get_output().stdout)["count"], 3);
+}
+
+#[test]
+fn open_lists_links_and_refuses_ambiguity() {
+    let env = Env::new();
+    init_plain(&env);
+    let one = add_json(
+        &env,
+        "Read https://example.com/a and https://example.com/b.",
+    );
+    let none = add_json(&env, "No links");
+    let id = one["id"].to_string();
+    env.cmd()
+        .args(["open", &id])
+        .assert()
+        .code(1)
+        .stdout("  1. https://example.com/a\n  2. https://example.com/b\n")
+        .stderr(predicate::str::contains("has 2 links"));
+    env.cmd()
+        .args(["open", &id, "2", "--print"])
+        .assert()
+        .success()
+        .stdout("https://example.com/b\n");
+    env.cmd()
+        .args(["open", &id, "3", "--print"])
+        .assert()
+        .code(2);
+    env.cmd()
+        .args(["open", &none["id"].to_string()])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("no http, https or mailto links"));
+}
+
+#[test]
+fn bulk_actions_by_filter_need_yes_and_undo_together() {
+    let env = Env::new();
+    init_plain(&env);
+    add_json(&env, "Pay rent +bills");
+    add_json(&env, "Pay water +bills");
+    add_json(&env, "Unrelated");
+    env.cmd()
+        .args(["done", "--filter", "+bills"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("pass --yes"));
+    env.cmd()
+        .args(["done", "--filter", "+bills", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Completed 2 tasks"));
+    assert_eq!(ls_titles(&env, &[]), ["Unrelated"]);
+    env.cmd().arg("undo").assert().success();
+    assert_eq!(ls_titles(&env, &[]).len(), 3);
+
+    // One match needs no --yes; reopen looks at closed tasks.
+    env.cmd()
+        .args(["cancel", "--filter", "Unrelated"])
+        .assert()
+        .success();
+    env.cmd()
+        .args(["reopen", "--filter", "Unrelated"])
+        .assert()
+        .success()
+        .stdout("Reopened task 3: Unrelated\n");
+    env.cmd()
+        .args(["rm", "--filter", "+bills", "-y"])
+        .assert()
+        .success();
+    assert_eq!(ls_titles(&env, &[]), ["Unrelated"]);
+    env.cmd()
+        .args(["rm", "--filter", "+nothing"])
+        .assert()
+        .success()
+        .stdout("No tasks match.\n");
+    env.cmd()
+        .args(["done", "1", "--filter", "+bills"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn files_that_are_not_ttask_databases_are_refused() {
+    let env = Env::new();
+    let notes = env.dir.path().join("notes.txt");
+    fs::write(&notes, "hello").unwrap();
+    let mut cmd = Command::cargo_bin("ttask").unwrap();
+    cmd.arg("--db")
+        .arg(&notes)
+        .arg("ls")
+        .env("TTASK_CONFIG", env.dir.path().join("config.toml"))
+        .env_remove("TTASK_DB")
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("not a ttask database"));
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "hello");
+}

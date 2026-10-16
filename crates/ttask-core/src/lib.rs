@@ -4,6 +4,7 @@
 pub mod date;
 pub mod duration;
 pub mod filter;
+pub mod links;
 pub mod quickadd;
 pub mod recur;
 pub mod urgency;

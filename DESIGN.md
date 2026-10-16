@@ -511,7 +511,7 @@ Recurrence and date tests pin the clock and time zone (injected `Clock` trait), 
 
 ## Implementation notes
 
-Status 2026-10-15: M0–M3 and the first five M4 features are implemented. Where the build differs from or sharpens the design above:
+Status 2026-10-16: M0–M4 are implemented. Where the build differs from or sharpens the design above:
 
 | Area | As built | Why |
 | --- | --- | --- |
@@ -533,6 +533,13 @@ Status 2026-10-15: M0–M3 and the first five M4 features are implemented. Where
 | Waiting / Someday | Two columns (`wait_until`, `someday`, migration 0003). Lists hide both unless the query mentions `wait:`/`is:waiting`/`is:someday`; `ls --all` adds `wait:any`. Recurring instances shift `wait:` with the due date | Keeps Today/Next focused without a new status |
 | Taskwarrior import | One open task per recurring series (the earliest pending instance, or the template); deleted tasks skipped; projects `A.B.C` → `A/B.C` | ttask models recurrence as a single open task |
 | Calendar export | VEVENTs (not VTODOs): all-day for dates, timed events last the estimate (30 min default); RRULE only for schedule-based recurrence | Most calendar apps ignore VTODO |
+| Opening a file | `Store::open` refuses directories, empty files, non-SQLite files whose size is not a whole number of 512-byte pages (before asking for a password), and SQLite files without ttask's `application_id` (`0x7474736B`) or, for older files, its tables. The check runs before WAL mode or migrations touch the file; the id is stamped on create and on the next open of older files, and copied into backups | `--db` or the TUI's open prompt pointing at the wrong file must not modify it or ask for a password |
+| `ttask open` / TUI `o` | Only `http`, `https`, `mailto` links; launched with `rundll32 url.dll,FileProtocolHandler` on Windows, `open` on macOS, `xdg-open` elsewhere | No `cmd /c start` parsing of `&`; `file:` links could start programs |
+| Bulk by filter | `done/reopen/cancel/rm --filter Q` use `ls` semantics (context included; `reopen` adds `not status:open`); more than one match asks on a terminal and needs `--yes` otherwise; one batch | One `ttask undo` reverts it; scripts never block on a prompt |
+| GitHub import | From a file (`gh issue list --json …` or REST API output), never the network; uid = issue URL; repo name → project; labels → tags; closed as not planned → cancelled; PRs skipped | Keeps N8 (no network in the core) |
+| TUI open database | `O`/`Ctrl-o`: path prompt with Tab completion; `inspect` validates first; encrypted files try the keychain, then a masked prompt. Rotating backups for such files only when no backup `dir` is configured, since backup names don't name the database | Switch files without restarting |
+| TUI search | `f`/`Ctrl-f` shows FTS results over every status as you type; `Esc` restores the previous view and filter | Faster than prompt → Enter → result |
+| TUI clipboard | `y`/`Y` write OSC 52 to the terminal, no clipboard crate | Works over SSH; no native dependencies |
 
 ## Roadmap and decisions
 
@@ -563,7 +570,8 @@ Added 2026-10-15 from a review of Taskwarrior, dstask, todoman/CalDAV, Super Pro
 | M4 | **Waiting / Someday**: `wait:<date>` hides a task until then, `wait:someday` parks it; Waiting and Someday views | Done |
 | M4 | **Taskwarrior import** (`task export` JSON, idempotent on uuid) | Done |
 | M4 | **Calendar export**: `export --format ics` (events for due tasks, recurrence, alarms) | Done |
-| M4 | `ttask open` (launch URLs in a task), bulk actions by filter (`done --filter …`), `ttask count` for prompts/status bars, GitHub-issues import | Planned |
+| M4 | `ttask open` (launch URLs in a task), bulk actions by filter (`done --filter …`), `ttask count` for prompts/status bars, GitHub-issues import | Done |
+| M4 | TUI: open another database file (validated), live full-text search, keys for links, dependencies, parent, history, copy, sort, lock, reload | Done |
 | **M5 Workflow** | Reports (completed per week, time per project, overdue trend) | Planned |
 | M5 | Guided weekly review in the TUI (inbox, overdue, stale, someday, projects without a next action) | Planned |
 | M5 | Focus mode / Pomodoro on top of the timer | Planned |

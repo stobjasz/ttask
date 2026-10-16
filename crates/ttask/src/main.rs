@@ -46,7 +46,12 @@ pub fn exit_code(err: &anyhow::Error) -> u8 {
     match store_err {
         Some(StoreError::Missing(_) | StoreError::TaskNotFound(_) | StoreError::NotFound(_)) => 2,
         Some(StoreError::WrongPassword | StoreError::PasswordUnavailable(_)) => 3,
-        Some(StoreError::Locked | StoreError::NotADatabase | StoreError::NewerSchema { .. }) => 4,
+        Some(
+            StoreError::Locked
+            | StoreError::NotADatabase
+            | StoreError::NotTtask { .. }
+            | StoreError::NewerSchema { .. },
+        ) => 4,
         _ => 1,
     }
 }

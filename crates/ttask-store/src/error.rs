@@ -21,6 +21,9 @@ pub enum StoreError {
     #[error("the file is not a ttask database, or it is corrupt")]
     NotADatabase,
 
+    #[error("not a ttask database: {reason}")]
+    NotTtask { path: PathBuf, reason: String },
+
     #[error(
         "database schema version {found} is newer than this ttask supports ({supported}); upgrade ttask"
     )]

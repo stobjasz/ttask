@@ -6,6 +6,7 @@ mod backups;
 mod detail;
 pub mod editor;
 pub mod io;
+pub mod launch;
 mod views;
 
 use jiff::ToSpan;
@@ -298,6 +299,23 @@ impl App {
         let active = self.store.db().running_timer()?.map(|e| e.task_id);
         detail.task = self.with_urgency(detail.task, active);
         Ok(detail)
+    }
+
+    /// Openable links in a task's title, notes and checklist, in that order.
+    pub fn links(&self, id: TaskId) -> Result<Vec<String>> {
+        let detail = TaskDetail::load(&self.store.db(), id, self.now_ms())?;
+        let mut text = format!("{}\n{}", detail.task.title, detail.task.notes);
+        for item in &detail.checklist {
+            text.push('\n');
+            text.push_str(&item.text);
+        }
+        Ok(ttask_core::links::find_links(&text))
+    }
+
+    /// How many tasks [`App::list_with`] would return.
+    pub fn count(&self, query: &str, extra: &str, use_context: bool) -> Result<u32> {
+        let expr = self.effective_filter(query, extra, use_context)?;
+        Ok(self.store.db().count_tasks(&expr, &self.ctx())?)
     }
 
     /// `(can_undo, can_redo)`.

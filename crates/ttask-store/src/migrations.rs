@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 
+use crate::open::APPLICATION_ID;
 use crate::{Result, StoreError};
 
 /// Forward-only migrations; entry `i` moves the schema from version `i` to `i + 1`.
@@ -35,6 +36,12 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<()> {
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", index as u32 + 1)?;
         tx.commit()?;
+    }
+    // Tells ttask files apart from other SQLite databases (see `inspect`);
+    // files from before it existed get it on their next open.
+    let app_id: i32 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if app_id != APPLICATION_ID {
+        conn.pragma_update(None, "application_id", APPLICATION_ID)?;
     }
     Ok(())
 }

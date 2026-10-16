@@ -28,7 +28,7 @@ pub use journal::{
 };
 pub use maintenance::{CheckReport, GcReport, remove_backup_copy};
 pub use migrations::SCHEMA_VERSION;
-pub use open::{DbMode, FileState, PasswordSource, Store, detect};
+pub use open::{APPLICATION_ID, DbMode, FileState, PasswordSource, Store, detect, inspect};
 pub use query::{QueryCtx, SearchHit, TaskQuery, TaskSort};
 pub use tasks::TaskFields;
 pub use transfer::{EventRecord, ProjectRecord};

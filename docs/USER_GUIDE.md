@@ -152,6 +152,10 @@ ttask --db ~/tasks/work.db init --encrypt
 TTASK_DB=~/tasks/work.db ttask ls
 ```
 
+In the TUI, `O` (or `Ctrl-o`) switches to another database file without restarting; see [§12](#12-the-tui).
+
+ttask checks a file before it touches it. It refuses directories, empty files, files that are neither SQLite nor SQLCipher (so a stray `notes.txt` is never mistaken for an encrypted database and you're not asked for a password), and SQLite databases that belong to other applications. Those fail with `not a ttask database: …` (exit code 4) and the file is left exactly as it was. Every ttask database carries the SQLite application id `0x7474736B` ("ttsk"); files created by older versions get it the next time they open.
+
 > **An encrypted database cannot be recovered without its password.** Store it in a password manager.
 
 ---
@@ -339,6 +343,29 @@ ttask search passport --all    # include closed tasks
 
 Matches are highlighted with `[…]` in a snippet under each result.
 
+### Counting
+
+`ttask count` prints how many tasks `ttask ls` would list, with the same views, filters, `--all` and `--no-context`. It's for shell prompts and status bars:
+
+```sh
+ttask count today        # 4
+ttask count overdue
+ttask --json count '+bills'   # {"count": 2}
+```
+
+### Opening links
+
+`ttask open 12` opens the link in task 12's title, notes or checklist in your browser (or mail client, for `mailto:`). With several links it lists them; pick one by number or open them all:
+
+```sh
+ttask open 12            # one link: opens it; several: prints a numbered list
+ttask open 12 2          # the second link
+ttask open 12 --all
+ttask open 12 --print    # print instead of opening
+```
+
+Only `http`, `https` and `mailto` links open. `file:` and other schemes are ignored, so a link in a task can't launch a program.
+
 ---
 
 ## 7. Changing tasks
@@ -393,6 +420,17 @@ ttask skip 7          # recurring: jump to the next occurrence without completin
 Each id is handled separately: `ttask done 1 99` completes task 1 and reports that 99 doesn't exist (exit code 2).
 
 Completing a task also completes its open subtasks.
+
+**By filter.** `done`, `reopen`, `cancel` and `rm` also take `--filter QUERY` instead of ids, and act on every task `ttask ls QUERY` shows (within the active context). For `reopen`, that means the matching done and cancelled tasks. The whole change is one undo step:
+
+```sh
+ttask ls '+bills due:<=today'                    # preview
+ttask done --filter '+bills due:<=today'         # lists the tasks and asks [y/N]
+ttask rm --filter '#old-project' --yes           # no question (needed in scripts)
+ttask undo                                       # brings all of them back
+```
+
+When the filter matches more than one task, ttask asks first; without a terminal it refuses unless you pass `--yes`.
 
 ### Undo, redo, history
 
@@ -657,10 +695,10 @@ Start it with `ttask` (no arguments). It needs an interactive terminal of at lea
 │─ Tags                  ││                                         ││                              │
 │ +bills                1││                                         ││                              │
 ╰────────────────────────╯╰─────────────────────────────────────────╯╰──────────────────────────────╯
- a add · e edit · x done · d due · / filter · : palette · ? help · q quit
+ a add · e edit · x done · / filter · f search · : palette · ? help · q quit
 ```
 
-- **Header:** current view, task count, active context (`@work`), active filter, marked count, running timer, and `[L]` for an encrypted database.
+- **Header:** current view, task count, active context (`@work`), active filter, a changed sort order (`by urgency`), marked count, running timer, and `[L]` for an encrypted database.
 - **Sidebar:** built-in views with open counts, projects (subprojects indented), tags in use, saved filters.
 - **List:** the tasks of the selected view; subtasks indented under their parent.
 - **Detail:** everything about the selected task, including notes, checklist and subtasks. It appears when the terminal is at least 100 columns wide; on narrower terminals press `Enter` for a full-screen detail view.
@@ -697,10 +735,19 @@ The TUI refreshes automatically when another process (e.g. `ttask add` in anothe
 | `D`, `Delete` | delete (asks for confirmation) |
 | `T` | start / stop the timer on the selected task |
 | `/` | filter the current view |
-| `Ctrl-f` | full-text search (includes closed tasks) |
+| `f`, `Ctrl-f` | full-text search over every task, open or closed; results update as you type |
 | `S` | save the current view + filter as a saved filter |
 | `w` | wait: hide until a date, `someday`, or empty to bring back |
 | `C` | switch context (`Tab` completes saved-filter names; empty or `none` clears) |
+| `o` | open the task's link in the browser (a picker when there are several) |
+| `b` | edit what the task waits on: the ids you leave in the prompt are its blockers |
+| `P` | make the task a subtask of another (`none`: top level) |
+| `H` | the task's change history |
+| `y` / `Y` | copy the title / the id to the clipboard |
+| `Ctrl-s` | cycle the sort order: due date, urgency, priority, title, newest, manual |
+| `O`, `Ctrl-o` | open another database file |
+| `L` | lock now (encrypted database) |
+| `Ctrl-l`, `F5` | reload |
 | `:`, `Ctrl-p` | command palette |
 | `u`, `Ctrl-z` | undo |
 | `Ctrl-r`, `Ctrl-y` | redo |
@@ -724,6 +771,9 @@ Several keys open a one-line prompt in the footer. Editing keys work as in a she
 - **Tags (`t`)** shows the current tags; the line you submit becomes the new tag set (`+a +b` or `a b`).
 - **Filter (`/`)** narrows the list as you type. The filter is combined with the view, stays active (shown in the header) until `Esc`, and can be saved with `S`.
 - **Checklist (`c`)** stays open so you can add several items.
+- **Search (`f`)** shows results while you type, across every task including done and cancelled ones. `Enter` keeps the results and moves to the list; `Esc` goes back to where you were.
+- **Waits on (`b`)** starts with the current blockers (`12 15`). Add ids to block on them, delete ids to unblock.
+- **Open database (`O`)** starts in the current database's folder. `Tab` completes file and folder names; with several matches it fills in their common prefix and lists them. The file is checked before anything is opened (see [§4](#4-creating-a-database)). An encrypted file uses the password saved in the keychain, or asks for it. The new database replaces the current one until you quit or open another; the next `ttask` command still uses your configured database.
 
 ### Multi-select
 
@@ -735,7 +785,11 @@ Mark tasks with `v` (or `Space` in the list), then `x`, `X`, `1`–`4`, `d`, `m`
 
 ### Idle lock
 
-For an encrypted database with `idle_lock_minutes` set, the TUI hides all tasks after that much inactivity and asks for the password again.
+For an encrypted database with `idle_lock_minutes` set, the TUI hides all tasks after that much inactivity and asks for the password again. `L` locks right away.
+
+### Clipboard
+
+`y` and `Y` copy through the terminal (the OSC 52 escape sequence), so they work over SSH too. Windows Terminal, iTerm2, kitty, Alacritty and WezTerm support it; in tmux, enable `set -g set-clipboard on`. Terminals without support ignore it.
 
 ### Themes
 
@@ -798,6 +852,8 @@ On the first run each day, ttask copies the database to `backups/` next to it:
 
 Backups keep the database's encryption (same password). Change the counts or folder in the config; set both counts to `0` to turn it off.
 
+Backup file names don't say which database they copy, so a configured `dir` is used only for your main database. Another database opened with `--db` or the TUI's `O` is backed up to the `backups/` folder next to it, or, when `dir` is set, not automatically.
+
 Before upgrading the database format, a new ttask version also saves `ttask.db.pre-vN.bak`.
 
 ### Manual backup and restore
@@ -858,6 +914,7 @@ ttask import tasks.json
 ttask import todo.txt
 ttask import tasks.age               # encrypted exports are detected and decrypted
 ttask import taskwarrior.json        # output of `task export`
+ttask import issues.json             # GitHub issues (see below)
 ttask undo                           # reverts the whole import
 ```
 
@@ -878,6 +935,15 @@ Field names for `--map`: `uid title notes project tags priority due due_time sch
 **Todoist.** Use Todoist's per-project CSV export. The file name becomes the project (override with `--project`), sections become subprojects, indented tasks become subtasks, `@labels` become tags, p1–p4 map to urgent–low, and dates like `every monday` become recurrences. Dates ttask can't read are kept in the task's notes.
 
 **Taskwarrior.** Run `task export > taskwarrior.json`, then `ttask import taskwarrior.json`. Descriptions, projects (`Home.Garden` becomes `Home/Garden`), tags, priorities, due/scheduled/wait dates, annotations (as dated note lines), dependencies and completion are imported; the Taskwarrior uuid becomes the task's uid, so you can re-import later to pick up changes. A recurring task becomes one ttask recurring task (its earliest pending instance). Deleted tasks and user-defined attributes are skipped, with a summary in the warnings.
+
+**GitHub issues.** ttask never goes online, so export the issues first, with the GitHub CLI or the REST API:
+
+```sh
+gh issue list --repo acme/rocket --state all --limit 1000 \n  --json number,title,body,url,state,stateReason,labels,milestone,createdAt,updatedAt,closedAt > issues.json
+ttask import issues.json            # detected automatically; --format github to force it
+```
+
+The repository name becomes the project (`--project` overrides it). Labels become tags (`good first issue` → `+good-first-issue`), and the milestone's due date becomes the due date. Closed issues are imported as done, or cancelled when closed as not planned. The issue URL is the uid and the first line of the notes, so importing again updates the tasks and `ttask open` takes you to the issue. Pull requests in a REST API export are skipped.
 
 **TickTick.** Use TickTick's backup CSV (Settings → Backup). Folder/List become the project, tags, notes, due/start dates, priority, repeat rules, completion and parent/child links are imported.
 
@@ -928,7 +994,7 @@ Under `[keys]`, write `action = "key"`. The key replaces that action's default k
 
 **Keys:** a character (`x`, `J`, `/`), or `enter`, `esc`, `tab`, `shift-tab`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `backspace`, `f1`–`f12`, with optional `ctrl-` / `alt-` prefixes (`ctrl-f`, `alt-up`).
 
-**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `wait` `context` `help` `quit` `back`.
+**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `wait` `context` `open_link` `open_database` `block` `parent` `history` `copy_title` `copy_id` `sort` `reload` `lock` `help` `quit` `back`.
 
 ### Environment variables
 
@@ -961,7 +1027,7 @@ Under `[keys]`, write `action = "key"`. The key replaces that action's default k
 | 1 | usage error, invalid input, or another error |
 | 2 | not found (task, project, database file) |
 | 3 | wrong or missing password |
-| 4 | database locked, corrupt, or from a newer ttask |
+| 4 | database locked, corrupt, from a newer ttask, or not a ttask database |
 
 Examples:
 
@@ -973,6 +1039,12 @@ t "Reply to Anna +email due:tom"
 # Morning summary
 ttask ls today --no-color
 
+# Open-task count in a shell prompt
+PS1='[$(ttask count today 2>/dev/null)] \w \$ '
+
+# Close every overdue +chore at once (one undo step)
+ttask done --filter '+chore is:overdue' --yes
+
 # Nightly encrypted off-site export
 TTASK_EXPORT_PASSPHRASE="$(pass show ttask-export)" \
   ttask --password-file ~/.ttask-pw export --encrypt --output ~/Dropbox/ttask-$(date +%F).age
@@ -983,6 +1055,8 @@ TTASK_EXPORT_PASSPHRASE="$(pass show ttask-export)" \
 ## 18. Troubleshooting
 
 **"No database at …; run `ttask init` first"** — no database exists at that path yet. Check `ttask config` for the path ttask is using, or pass `--db`.
+
+**"not a ttask database: …" (exit 4)** — the path points at a directory, an empty file, a file that isn't a database, or another application's SQLite database. ttask didn't change it. Check the path, or create a database there with `ttask init`.
 
 **"wrong password" (exit 3)** — three prompt attempts failed, or a `--password-file` / `TTASK_PASSWORD` is wrong. If the keychain cached an old password it's removed automatically; run the command again and type the password.
 

@@ -45,6 +45,9 @@ ttask edit 12 'due:+3d -+later !urgent New title'
 ttask edit 12               # $EDITOR on a TOML form
 ttask done 12 13            # recurring tasks spawn their next instance
 ttask reopen | cancel | rm | skip <ids>
+ttask done --filter '+bills due:<=today' [--yes]   # also reopen/cancel/rm; one undo step
+ttask count today          # just the number, for prompts and status bars
+ttask open 12 [N] [--all]  # open the task's http/https/mailto link(s)
 ttask undo / ttask redo     # every action, including imports
 ttask search invoice
 ttask checklist 12 add passport ; ttask checklist 12 toggle 1
@@ -53,7 +56,7 @@ ttask timer start 12 ; ttask timer stop
 ttask project ls|add|rename|archive|rm ; ttask tag ls|rename|rm
 ttask filter save "This week" 'due:<=eow' ; ttask ls "This week"
 ttask context define work '#work' ; ttask context none   # focus every list on one area
-ttask import tasks.json | todo.txt | export.csv | taskwarrior.json [--dry-run] [--map title=Name]
+ttask import tasks.json | todo.txt | export.csv | taskwarrior.json | issues.json [--dry-run] [--map title=Name]
 ttask export --format json|csv|markdown|todotxt|ics [--output f] [--encrypt] [--filter Q]
 ttask remind [--run | --install | --uninstall]
 ttask db info|backup|check|passwd|encrypt|decrypt|gc|gc-backups
@@ -66,7 +69,8 @@ bare words (full-text), `"quoted phrases"`, `and`/`or`/`not`, parentheses.
 Use `not +tag` (or `--` before an argument starting with `-`).
 
 Exit codes: 0 ok, 1 usage or other error, 2 not found, 3 wrong or missing
-password, 4 database locked, corrupt, or from a newer ttask.
+password, 4 database locked, corrupt, from a newer ttask, or not a ttask
+database (other files are refused before anything is written to them).
 
 ## TUI keys (vim preset)
 
@@ -77,13 +81,17 @@ password, 4 database locked, corrupt, or from a newer ttask.
 | `g`/`G` | top / bottom | `M` | modify with quick-add tokens |
 | `Enter` | open / full-screen detail | `x` / `X` | toggle done / cancel |
 | `/` | filter view | `1`–`4` | priority low…urgent |
-| `Ctrl-f` | full-text search | `d` `m` `t` | due / move / tags |
+| `f` `Ctrl-f` | full-text search (live) | `d` `m` `t` | due / move / tags |
 | `:` | command palette | `c` | add checklist item |
 | `u` / `Ctrl-r` | undo / redo | `Space` | mark (list), toggle item (detail) |
 | `v` | mark for multi-select | `J`/`K` | reorder (inbox/projects) |
 | `s` | skip occurrence | `D` | delete (asks) |
 | `T` | start/stop timer | `S` | save current filter |
 | `w` | wait / someday | `C` | switch context |
+| `o` | open link | `O` `Ctrl-o` | open another database file |
+| `b` | waits on (dependencies) | `P` | make subtask of |
+| `H` | task history | `y` / `Y` | copy title / id |
+| `Ctrl-s` | cycle sort | `L` | lock now (encrypted) |
 | `?` | help | `q` | quit |
 
 `keymap = "simple"` drops the vim keys (reorder with `Alt-↑/↓`); any action

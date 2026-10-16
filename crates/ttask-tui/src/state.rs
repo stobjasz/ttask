@@ -2,6 +2,7 @@
 //! driven by tests.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -10,7 +11,7 @@ use ttask_app::{App, TaskDetail, View, ViewKind, arrange_tree};
 use ttask_core::date::parse_date;
 use ttask_core::quickadd::{Change, Mods, Wait, is_tag_name};
 use ttask_core::{Priority, Task, TaskId};
-use ttask_store::TaskSort;
+use ttask_store::{DbMode, StoreError, TaskSort};
 
 use crate::input::LineInput;
 use crate::keymap::{Action, Keymap, KeymapName};
@@ -19,8 +20,13 @@ use crate::theme::{DetailPane, Theme, ThemeName};
 
 /// Called with a notification title and body (desktop notifications).
 pub type Notifier = Box<dyn Fn(&str, &str)>;
-/// Checks a password typed on the idle-lock screen.
-pub type Unlocker = Box<dyn Fn(&SecretString) -> bool>;
+/// Checks a password typed on the idle-lock screen for the database at the path.
+pub type Unlocker = Box<dyn Fn(&Path, &SecretString) -> bool>;
+/// Opens another database file. Without a password an encrypted file may
+/// still open (e.g. from the keychain); on failure the TUI asks for one.
+pub type Opener = Box<dyn Fn(&Path, Option<&SecretString>) -> anyhow::Result<App>>;
+/// Hands a link to the browser or mail client.
+pub type LinkOpener = Box<dyn Fn(&str) -> std::io::Result<()>>;
 
 pub struct Settings {
     pub theme: ThemeName,
@@ -33,6 +39,8 @@ pub struct Settings {
     pub idle_lock: Option<Duration>,
     pub unlock: Option<Unlocker>,
     pub notify: Option<Notifier>,
+    pub open_db: Option<Opener>,
+    pub open_link: Option<LinkOpener>,
 }
 
 impl Default for Settings {
@@ -47,6 +55,8 @@ impl Default for Settings {
             idle_lock: None,
             unlock: None,
             notify: None,
+            open_db: None,
+            open_link: None,
         }
     }
 }
@@ -78,6 +88,10 @@ pub enum PromptKind {
     SaveFilter,
     Wait(Vec<TaskId>),
     Context,
+    OpenDatabase,
+    Password(PathBuf),
+    Block(TaskId),
+    Parent(TaskId),
 }
 
 impl PromptKind {
@@ -96,7 +110,19 @@ impl PromptKind {
             PromptKind::SaveFilter => "Save filter as",
             PromptKind::Wait(_) => "Wait until (date, someday, none)",
             PromptKind::Context => "Context (saved filter, none)",
+            PromptKind::OpenDatabase => "Open database",
+            PromptKind::Password(_) => "Password",
+            PromptKind::Block(_) => "Waits on (task ids)",
+            PromptKind::Parent(_) => "Subtask of (task id, none)",
         }
+    }
+
+    /// Prompts that show a second line under the input.
+    pub fn has_preview(&self) -> bool {
+        matches!(
+            self,
+            PromptKind::Add { .. } | PromptKind::Modify(_) | PromptKind::OpenDatabase
+        )
     }
 }
 
@@ -104,8 +130,12 @@ pub struct Prompt {
     pub kind: PromptKind,
     pub input: LineInput,
     pub error: Option<String>,
-    /// Filter text before the prompt opened, restored on Esc.
+    /// Tab-completion candidates and similar help under the input.
+    pub hint: Option<String>,
+    /// Filter text and view before the prompt opened, restored on Esc
+    /// (filtering and searching change them as you type).
     previous_filter: String,
+    previous_view: View,
 }
 
 pub enum Mode {
@@ -117,6 +147,12 @@ pub enum Mode {
         ids: Vec<TaskId>,
     },
     Help {
+        scroll: u16,
+    },
+    /// A task's change history: `(when, what)` rows.
+    History {
+        title: String,
+        entries: Vec<(String, String)>,
         scroll: u16,
     },
     Locked {
@@ -157,7 +193,10 @@ pub struct Tui {
     pub timer: Option<(ttask_app::TimeEntry, Task)>,
     /// Name of the active context, shown in the header.
     pub context: Option<String>,
+    /// `Ctrl-S` replaces the view's sort until another view opens.
+    pub sort_override: Option<TaskSort>,
     editor_request: Option<TaskId>,
+    clipboard_request: Option<String>,
     data_version: i64,
     last_activity: Instant,
     last_poll: Instant,
@@ -197,7 +236,9 @@ impl Tui {
             width: 120,
             timer: None,
             context: None,
+            sort_override: None,
             editor_request: None,
+            clipboard_request: None,
             data_version: 0,
             last_activity: now,
             last_poll: now,
@@ -229,7 +270,11 @@ impl Tui {
             }
         }
         let selected_id = self.selected_task().map(|t| t.id);
-        let tasks = self.app.view_tasks(&self.current, &self.filter)?;
+        let view = View {
+            sort: self.sort(),
+            ..self.current.clone()
+        };
+        let tasks = self.app.view_tasks(&view, &self.filter)?;
         self.tasks = arrange_tree(tasks);
         self.task_idx = selected_id
             .and_then(|id| self.tasks.iter().position(|(t, _)| t.id == id))
@@ -261,6 +306,11 @@ impl Tui {
             },
             SidebarEntry::Header(_) => false,
         })
+    }
+
+    /// The sort in effect: the override, else the view's.
+    pub fn sort(&self) -> TaskSort {
+        self.sort_override.unwrap_or(self.current.sort)
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
@@ -391,6 +441,11 @@ impl Tui {
         self.editor_request.take()
     }
 
+    /// Text to put on the clipboard (the terminal does it, via OSC 52).
+    pub fn take_clipboard_request(&mut self) -> Option<String> {
+        self.clipboard_request.take()
+    }
+
     /// Applies notes returned from `$EDITOR`.
     pub fn finish_notes(&mut self, id: TaskId, result: std::io::Result<String>) {
         match result {
@@ -435,23 +490,31 @@ impl Tui {
                 }
                 _ => Mode::Confirm { message, ids },
             },
-            Mode::Help { scroll } => match self.keymap.action(&key) {
-                Some(Action::Down) => Mode::Help { scroll: scroll + 1 },
-                Some(Action::Up) => Mode::Help {
-                    scroll: scroll.saturating_sub(1),
+            Mode::Help { scroll } => match self.scroll_key(&key, scroll) {
+                Some(scroll) => Mode::Help { scroll },
+                None => Mode::Normal,
+            },
+            Mode::History {
+                title,
+                entries,
+                scroll,
+            } => match self.scroll_key(&key, scroll) {
+                Some(scroll) => Mode::History {
+                    title,
+                    entries,
+                    scroll,
                 },
-                Some(Action::PageDown) => Mode::Help {
-                    scroll: scroll + 10,
-                },
-                Some(Action::PageUp) => Mode::Help {
-                    scroll: scroll.saturating_sub(10),
-                },
-                _ => Mode::Normal,
+                None => Mode::Normal,
             },
             Mode::Locked { mut input, error } => match key.code {
                 KeyCode::Enter => {
                     let password = SecretString::from(input.text());
-                    let ok = self.settings.unlock.as_ref().is_some_and(|f| f(&password));
+                    let path = self.app.store().path().to_owned();
+                    let ok = self
+                        .settings
+                        .unlock
+                        .as_ref()
+                        .is_some_and(|f| f(&path, &password));
                     if ok {
                         self.mode = Mode::Normal;
                         self.reload();
@@ -471,16 +534,40 @@ impl Tui {
         };
     }
 
+    /// New scroll position for a key in a scrollable popup; `None` closes it.
+    fn scroll_key(&self, key: &KeyEvent, scroll: u16) -> Option<u16> {
+        match self.keymap.action(key) {
+            Some(Action::Down) => Some(scroll + 1),
+            Some(Action::Up) => Some(scroll.saturating_sub(1)),
+            Some(Action::PageDown) => Some(scroll + 10),
+            Some(Action::PageUp) => Some(scroll.saturating_sub(10)),
+            _ => None,
+        }
+    }
+
     fn prompt_key(&mut self, mut prompt: Prompt, key: KeyEvent) -> Mode {
         match key.code {
             KeyCode::Esc => {
-                if prompt.kind == PromptKind::Filter {
-                    self.filter = prompt.previous_filter.clone();
-                    self.reload();
+                match prompt.kind {
+                    PromptKind::Filter => {
+                        self.filter = prompt.previous_filter.clone();
+                        self.reload();
+                    }
+                    PromptKind::Search if self.current != prompt.previous_view => {
+                        self.open_view(prompt.previous_view.clone());
+                        self.filter = prompt.previous_filter.clone();
+                        self.reload();
+                    }
+                    _ => {}
                 }
                 Mode::Normal
             }
             KeyCode::Enter => self.submit(prompt),
+            KeyCode::Tab if prompt.kind == PromptKind::OpenDatabase => {
+                prompt.hint = complete_path(&mut prompt.input);
+                prompt.error = None;
+                Mode::Prompt(prompt)
+            }
             KeyCode::Tab if matches!(prompt.kind, PromptKind::Move(_)) => {
                 let paths: Vec<String> = self
                     .app
@@ -502,6 +589,18 @@ impl Tui {
             _ => {
                 if prompt.input.handle(key) {
                     prompt.error = None;
+                    prompt.hint = None;
+                    if prompt.kind == PromptKind::Search {
+                        // Results as you type; Esc goes back.
+                        let text = prompt.input.text();
+                        if text.trim().is_empty() {
+                            if self.current != prompt.previous_view {
+                                self.open_view(prompt.previous_view.clone());
+                            }
+                        } else {
+                            self.show_search(&text);
+                        }
+                    }
                     if prompt.kind == PromptKind::Filter {
                         // Filter as you type, while the text parses.
                         let text = prompt.input.text();
@@ -539,6 +638,7 @@ impl Tui {
                     }
                     Some(Target::View(view)) => self.open_view(view),
                     Some(Target::Context(name)) => self.switch_context(name.as_deref()),
+                    Some(Target::Link(link)) => self.open_link(&link),
                     None => {}
                 }
                 Mode::Normal
@@ -553,11 +653,26 @@ impl Tui {
     }
 
     fn open_prompt(&mut self, kind: PromptKind, initial: &str) {
+        let mut input = LineInput::new(initial);
+        input.masked = matches!(kind, PromptKind::Password(_));
         self.mode = Mode::Prompt(Prompt {
             kind,
-            input: LineInput::new(initial),
+            input,
             error: None,
+            hint: None,
             previous_filter: self.filter.clone(),
+            previous_view: self.current.clone(),
+        });
+    }
+
+    /// Shows full-text results for `text` over every task, open or not.
+    fn show_search(&mut self, text: &str) {
+        let query = format!("status:all wait:any text:\"{}\"", text.replace('"', ""));
+        self.open_view(View {
+            name: format!("Search: {}", text.trim()),
+            query,
+            sort: TaskSort::Smart,
+            kind: ViewKind::Search,
         });
     }
 
@@ -571,6 +686,7 @@ impl Tui {
 
     pub fn open_view(&mut self, view: View) {
         self.current = view;
+        self.sort_override = None;
         self.filter.clear();
         self.marked.clear();
         self.task_idx = 0;
@@ -685,19 +801,60 @@ impl Tui {
                 Err(e) => Err(e.message),
             },
             PromptKind::Search => {
+                if !text.trim().is_empty() {
+                    if self.current.kind != ViewKind::Search {
+                        self.show_search(&text);
+                    }
+                    self.focus = Focus::List;
+                    self.detail_full = false;
+                }
+                Ok(None)
+            }
+            PromptKind::OpenDatabase => {
+                let path = expand_home(text.trim());
                 if text.trim().is_empty() {
+                    Err("type the path of a ttask database (Tab completes)".into())
+                } else {
+                    match self.start_open(&path) {
+                        Ok(Some(next)) => return next,
+                        Ok(None) => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+            PromptKind::Password(path) => {
+                let password = SecretString::from(text);
+                let path = path.clone();
+                match self.open_with(&path, Some(&password)) {
+                    Ok(()) => Ok(None),
+                    Err(e) => {
+                        prompt.input.clear();
+                        Err(e)
+                    }
+                }
+            }
+            PromptKind::Block(id) => self.set_blockers(*id, &text),
+            PromptKind::Parent(id) => {
+                let trimmed = text.trim().trim_start_matches('#');
+                let parent = if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
                     Ok(None)
                 } else {
-                    let query = format!("status:all wait:any text:\"{}\"", text.replace('"', ""));
-                    self.open_view(View {
-                        name: format!("Search: {text}"),
-                        query,
-                        sort: TaskSort::Smart,
-                        kind: ViewKind::Search,
-                    });
-                    self.focus = Focus::List;
-                    Ok(None)
-                }
+                    trimmed
+                        .parse::<TaskId>()
+                        .map(Some)
+                        .map_err(|_| format!("`{trimmed}` is not a task id"))
+                };
+                parent.and_then(|parent| {
+                    self.app
+                        .set_parent(*id, parent)
+                        .map(|_| {
+                            Some(match parent {
+                                Some(p) => format!("Now a subtask of {p}"),
+                                None => "Now a top-level task".into(),
+                            })
+                        })
+                        .map_err(|e| e.to_string())
+                })
             }
             PromptKind::ChecklistAdd(id) => match self.app.checklist_add(*id, &text) {
                 Ok(_) => {
@@ -1023,9 +1180,234 @@ impl Tui {
                 let current = self.context.clone().unwrap_or_default();
                 self.open_prompt(PromptKind::Context, &current);
             }
+            Action::OpenLink => {
+                let Some(id) = self.selected_task().map(|t| t.id) else {
+                    return;
+                };
+                match self.app.links(id) {
+                    Ok(links) if links.is_empty() => self.error("No links in this task"),
+                    Ok(links) if links.len() == 1 => self.open_link(&links[0]),
+                    Ok(links) => {
+                        let items = links
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, link)| Item {
+                                label: link.clone(),
+                                hint: format!("link {}", i + 1),
+                                target: Target::Link(link),
+                            })
+                            .collect();
+                        self.mode = Mode::Palette(Palette::titled("Open link", items));
+                    }
+                    Err(e) => self.error(e.to_string()),
+                }
+            }
+            Action::OpenDatabase => {
+                let current = self.app.store().path();
+                let initial = current
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(|p| format!("{}{}", p.display(), std::path::MAIN_SEPARATOR))
+                    .unwrap_or_default();
+                self.open_prompt(PromptKind::OpenDatabase, &initial);
+            }
+            Action::Block => {
+                if let Some(id) = self.selected_task().map(|t| t.id) {
+                    let initial = self
+                        .detail
+                        .as_ref()
+                        .filter(|d| d.task.id == id)
+                        .map(|d| {
+                            d.blocked_by
+                                .iter()
+                                .map(|b| format!("{} ", b.id))
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default();
+                    self.open_prompt(PromptKind::Block(id), &initial);
+                }
+            }
+            Action::Parent => {
+                if let Some(task) = self.selected_task() {
+                    let (id, parent) = (task.id, task.parent_id);
+                    let initial = parent.map(|p| p.to_string()).unwrap_or_default();
+                    self.open_prompt(PromptKind::Parent(id), &initial);
+                }
+            }
+            Action::History => {
+                if let Some(task) = self.selected_task().cloned() {
+                    match self.app.history(task.id) {
+                        Ok(history) => {
+                            let tz = self.app.clock().time_zone();
+                            let entries = history
+                                .into_iter()
+                                .map(|e| {
+                                    let at = ttask_core::jiff::Timestamp::from_millisecond(e.at)
+                                        .map(|ts| {
+                                            ts.to_zoned(tz.clone())
+                                                .strftime("%Y-%m-%d %H:%M")
+                                                .to_string()
+                                        })
+                                        .unwrap_or_default();
+                                    let what = if e.changed.is_empty() {
+                                        e.kind
+                                    } else {
+                                        format!("{}: {}", e.kind, e.changed.join(", "))
+                                    };
+                                    (at, what)
+                                })
+                                .collect();
+                            self.mode = Mode::History {
+                                title: task.title,
+                                entries,
+                                scroll: 0,
+                            };
+                        }
+                        Err(e) => self.error(e.to_string()),
+                    }
+                }
+            }
+            Action::CopyTitle | Action::CopyId => {
+                let text = self.selected_task().map(|t| {
+                    if action == Action::CopyTitle {
+                        t.title.clone()
+                    } else {
+                        t.id.to_string()
+                    }
+                });
+                if let Some(text) = text {
+                    self.ok(format!("Copied: {text}"));
+                    self.clipboard_request = Some(text);
+                }
+            }
+            Action::Sort => {
+                const CYCLE: [TaskSort; 6] = [
+                    TaskSort::Smart,
+                    TaskSort::Urgency,
+                    TaskSort::Priority,
+                    TaskSort::Title,
+                    TaskSort::Created,
+                    TaskSort::Manual,
+                ];
+                let current = self.sort();
+                let next = CYCLE
+                    .iter()
+                    .position(|s| *s == current)
+                    .map_or(CYCLE[0], |i| CYCLE[(i + 1) % CYCLE.len()]);
+                self.sort_override = (next != self.current.sort).then_some(next);
+                self.reload();
+                self.ok(format!("Sorted by {}", sort_name(next)));
+            }
+            Action::Reload => {
+                self.reload();
+                self.ok("Reloaded");
+            }
+            Action::Lock => {
+                if self.settings.encrypted && self.settings.unlock.is_some() {
+                    self.lock();
+                } else {
+                    self.error("Only an encrypted database can be locked");
+                }
+            }
             Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::Quit => self.quit = true,
         }
+    }
+
+    fn open_link(&mut self, link: &str) {
+        let result = match &self.settings.open_link {
+            Some(open) => open(link).map_err(|e| e.to_string()),
+            None => Err("opening links is not available here".into()),
+        };
+        match result {
+            Ok(()) => self.ok(format!("Opened {link}")),
+            Err(e) => self.error(e),
+        }
+    }
+
+    /// Checks `path` and opens it, or returns the password prompt to show
+    /// for an encrypted file the opener could not unlock on its own.
+    fn start_open(&mut self, path: &Path) -> Result<Option<Mode>, String> {
+        if self.settings.open_db.is_none() {
+            return Err("opening other databases is not available here".into());
+        }
+        if same_file(path, self.app.store().path()) {
+            return Err("that database is already open".into());
+        }
+        match ttask_store::inspect(path) {
+            Err(StoreError::Missing(_)) => Err(format!("no file at {}", path.display())),
+            Err(e) => Err(e.to_string()),
+            Ok(DbMode::Plain) => self.open_with(path, None).map(|()| None),
+            Ok(DbMode::Encrypted) => match self.open_with(path, None) {
+                Ok(()) => Ok(None),
+                Err(_) => {
+                    self.open_prompt(PromptKind::Password(path.to_owned()), "");
+                    Ok(Some(std::mem::replace(&mut self.mode, Mode::Normal)))
+                }
+            },
+        }
+    }
+
+    /// Replaces the open database with the one at `path`.
+    fn open_with(&mut self, path: &Path, password: Option<&SecretString>) -> Result<(), String> {
+        let open = self
+            .settings
+            .open_db
+            .as_ref()
+            .ok_or("opening other databases is not available here")?;
+        let app = open(path, password).map_err(|e| {
+            match e.chain().find_map(|c| c.downcast_ref::<StoreError>()) {
+                Some(StoreError::WrongPassword | StoreError::NotADatabase) => {
+                    "Wrong password".to_owned()
+                }
+                _ => format!("{e:#}"),
+            }
+        })?;
+        self.settings.encrypted = app.store().mode() == DbMode::Encrypted;
+        self.app = app;
+        self.marked.clear();
+        self.focus = Focus::List;
+        self.last_reminders = None;
+        self.data_version = -1;
+        self.open_view(View::today());
+        if let Some(i) = self.sidebar_position(&View::today()) {
+            self.sidebar_idx = i;
+        }
+        self.ok(format!("Opened {}", path.display()));
+        Ok(())
+    }
+
+    /// Makes `id` wait on exactly the task ids in `text`.
+    fn set_blockers(&mut self, id: TaskId, text: &str) -> Result<Option<String>, String> {
+        let wanted = text
+            .split([' ', ','])
+            .map(|s| s.trim().trim_start_matches('#'))
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.parse::<TaskId>()
+                    .map_err(|_| format!("`{s}` is not a task id"))
+            })
+            .collect::<Result<BTreeSet<TaskId>, String>>()?;
+        let current: BTreeSet<TaskId> = self
+            .app
+            .detail(id)
+            .map_err(|e| e.to_string())?
+            .blocked_by
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        for blocker in wanted.difference(&current) {
+            self.app.block(id, *blocker).map_err(|e| e.to_string())?;
+        }
+        for blocker in current.difference(&wanted) {
+            self.app.unblock(id, *blocker).map_err(|e| e.to_string())?;
+        }
+        Ok(Some(if wanted.is_empty() {
+            "Waits on nothing".into()
+        } else {
+            let ids: Vec<String> = wanted.iter().map(|b| format!("#{b}")).collect();
+            format!("Waits on {}", ids.join(" "))
+        }))
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -1137,7 +1519,7 @@ impl Tui {
         let Some(id) = self.selected_task().map(|t| t.id) else {
             return;
         };
-        if self.current.sort != TaskSort::Manual {
+        if self.sort() != TaskSort::Manual {
             self.error("Manual order applies in the Inbox and project views");
             return;
         }
@@ -1291,6 +1673,108 @@ fn complete_from(paths: &[String], input: &mut LineInput) {
     };
     if let Some(next) = next {
         *input = LineInput::new(&next);
+    }
+}
+
+pub fn sort_name(sort: TaskSort) -> &'static str {
+    match sort {
+        TaskSort::Smart => "due date",
+        TaskSort::Manual => "manual order",
+        TaskSort::Priority => "priority",
+        TaskSort::Created => "newest",
+        TaskSort::Completed => "completion",
+        TaskSort::Title => "title",
+        TaskSort::Urgency => "urgency",
+    }
+}
+
+/// `~/x` → the home directory joined with `x`.
+fn expand_home(text: &str) -> PathBuf {
+    let home = || {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+    };
+    match text.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => match home() {
+            Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+            None => PathBuf::from(text),
+        },
+        _ => PathBuf::from(text),
+    }
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Tab-completes a file system path in `input`: a single match is filled
+/// in (directories get a trailing separator), several are completed to their
+/// common prefix and returned as a hint.
+fn complete_path(input: &mut LineInput) -> Option<String> {
+    let typed = input.text();
+    let (dir_text, prefix) = match typed.rfind(['/', '\\']) {
+        Some(i) => (&typed[..=i], &typed[i + 1..]),
+        None => ("", typed.as_str()),
+    };
+    let dir = if dir_text.is_empty() {
+        PathBuf::from(".")
+    } else {
+        expand_home(dir_text)
+    };
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let lower = prefix.to_lowercase();
+    let mut matches: Vec<(String, bool)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+            // Hidden files only when asked for with a leading dot.
+            let visible = !name.starts_with('.') || prefix.starts_with('.');
+            (visible && name.to_lowercase().starts_with(&lower)).then_some((name, is_dir))
+        })
+        .collect();
+    matches.sort();
+    match matches.as_slice() {
+        [] => Some("no matches".into()),
+        [(name, is_dir)] => {
+            let sep = if *is_dir {
+                std::path::MAIN_SEPARATOR.to_string()
+            } else {
+                String::new()
+            };
+            *input = LineInput::new(&format!("{dir_text}{name}{sep}"));
+            None
+        }
+        many => {
+            let common = many
+                .iter()
+                .skip(1)
+                .fold(many[0].0.clone(), |acc, (name, _)| {
+                    acc.chars()
+                        .zip(name.chars())
+                        .take_while(|(a, b)| a.to_lowercase().eq(b.to_lowercase()))
+                        .map(|(a, _)| a)
+                        .collect()
+                });
+            if common.chars().count() > prefix.chars().count() {
+                *input = LineInput::new(&format!("{dir_text}{common}"));
+            }
+            let names: Vec<String> = many
+                .iter()
+                .map(|(name, is_dir)| {
+                    if *is_dir {
+                        format!("{name}{}", std::path::MAIN_SEPARATOR)
+                    } else {
+                        name.clone()
+                    }
+                })
+                .collect();
+            Some(names.join("  "))
+        }
     }
 }
 

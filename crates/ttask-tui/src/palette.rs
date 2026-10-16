@@ -13,6 +13,8 @@ pub enum Target {
     View(View),
     /// Activate a saved filter as the context, or clear it with `None`.
     Context(Option<String>),
+    /// Open a link from the selected task.
+    Link(String),
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,7 @@ pub struct Item {
 }
 
 pub struct Palette {
+    pub title: &'static str,
     pub input: LineInput,
     pub items: Vec<Item>,
     /// Indices into `items`, best match first.
@@ -33,7 +36,13 @@ pub struct Palette {
 
 impl Palette {
     pub fn new(items: Vec<Item>) -> Palette {
+        Palette::titled("Command palette", items)
+    }
+
+    /// A palette over other items (e.g. a task's links).
+    pub fn titled(title: &'static str, items: Vec<Item>) -> Palette {
         let mut palette = Palette {
+            title,
             input: LineInput::default(),
             matches: (0..items.len()).collect(),
             items,

@@ -54,6 +54,16 @@ pub enum Action {
     SaveFilter,
     Wait,
     Context,
+    OpenLink,
+    OpenDatabase,
+    Block,
+    Parent,
+    History,
+    CopyTitle,
+    CopyId,
+    Sort,
+    Reload,
+    Lock,
     Help,
     Quit,
     Back,
@@ -107,6 +117,20 @@ impl Action {
         (Action::SaveFilter, "save_filter", "Save filter"),
         (Action::Wait, "wait", "Wait until / someday"),
         (Action::Context, "context", "Switch context"),
+        (Action::OpenLink, "open_link", "Open a link from the task"),
+        (
+            Action::OpenDatabase,
+            "open_database",
+            "Open another database file",
+        ),
+        (Action::Block, "block", "Waits on (dependencies)"),
+        (Action::Parent, "parent", "Make subtask of"),
+        (Action::History, "history", "Task history"),
+        (Action::CopyTitle, "copy_title", "Copy title"),
+        (Action::CopyId, "copy_id", "Copy task id"),
+        (Action::Sort, "sort", "Cycle sort order"),
+        (Action::Reload, "reload", "Reload"),
+        (Action::Lock, "lock", "Lock now"),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
         (Action::Back, "back", "Back / clear filter"),
@@ -275,7 +299,7 @@ impl Keymap {
         bind(&["m"], Action::Move);
         bind(&["t"], Action::Tags);
         bind(&["/"], Action::Filter);
-        bind(&["ctrl-f"], Action::Search);
+        bind(&["f", "ctrl-f"], Action::Search);
         bind(&[":", "ctrl-p"], Action::Palette);
         bind(&["u", "ctrl-z"], Action::Undo);
         bind(&["ctrl-r", "ctrl-y"], Action::Redo);
@@ -288,6 +312,16 @@ impl Keymap {
         bind(&["S"], Action::SaveFilter);
         bind(&["w"], Action::Wait);
         bind(&["C"], Action::Context);
+        bind(&["o"], Action::OpenLink);
+        bind(&["O", "ctrl-o"], Action::OpenDatabase);
+        bind(&["b"], Action::Block);
+        bind(&["P"], Action::Parent);
+        bind(&["H"], Action::History);
+        bind(&["y"], Action::CopyTitle);
+        bind(&["Y"], Action::CopyId);
+        bind(&["ctrl-s"], Action::Sort);
+        bind(&["ctrl-l", "f5"], Action::Reload);
+        bind(&["L"], Action::Lock);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);
@@ -382,6 +416,20 @@ mod tests {
         );
         overrides.insert("frobnicate".to_owned(), "z".to_owned());
         assert!(Keymap::new(KeymapName::Vim, &overrides).is_err());
+    }
+
+    #[test]
+    fn every_action_has_a_default_key_and_keys_are_unique() {
+        for name in [KeymapName::Vim, KeymapName::Simple] {
+            let map = Keymap::new(name, &BTreeMap::new()).unwrap();
+            for (action, _, _) in Action::ALL {
+                assert!(!map.keys_for(*action).is_empty(), "{action:?} has no key");
+            }
+            let mut seen = std::collections::HashSet::new();
+            for (chord, action) in &map.bindings {
+                assert!(seen.insert(*chord), "{chord:?} bound twice (to {action:?})");
+            }
+        }
     }
 
     #[test]

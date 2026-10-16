@@ -10,7 +10,7 @@ use serde_json::json;
 use ttask_app::io::{self, ImportBatch};
 use ttask_app::{App, BackupPolicy, View, arrange_tree};
 use ttask_core::{SystemClock, Task, TaskId};
-use ttask_store::{DbMode, FileState, Store, StoreError, TaskSort, detect};
+use ttask_store::{DbMode, FileState, PasswordSource, Store, StoreError, TaskSort, detect};
 
 use crate::cli::*;
 use crate::config::{self, Config, Remember};
@@ -60,15 +60,8 @@ impl Ctx {
         if store.mode() == DbMode::Encrypted {
             password::remember_if_configured(&chain, &self.config);
         }
-        let mut app = App::new(store, SystemClock::new());
-        app.set_urgency_weights(self.config.urgency.clone());
-        let backups = &self.config.database.backups;
-        if backups.daily > 0 || backups.weekly > 0 {
-            let policy = BackupPolicy {
-                dir: self.backup_dir(),
-                daily: backups.daily,
-                weekly: backups.weekly,
-            };
+        let app = new_app(store, &self.config);
+        if let Some(policy) = backup_policy(&self.config, &self.db, true) {
             if let Err(e) = app.rotate_backups(&policy) {
                 eprintln!("warning: automatic backup failed: {e}");
             }
@@ -77,14 +70,48 @@ impl Ctx {
     }
 
     fn backup_dir(&self) -> PathBuf {
-        match &self.config.database.backups.dir {
-            Some(dir) => config::expand(dir),
-            None => self
-                .db
-                .parent()
-                .map(|p| p.join("backups"))
-                .unwrap_or_else(|| PathBuf::from("backups")),
-        }
+        backup_dir(&self.config, &self.db)
+    }
+}
+
+fn new_app(store: Store, config: &Config) -> App {
+    let mut app = App::new(store, SystemClock::new());
+    app.set_urgency_weights(config.urgency.clone());
+    app
+}
+
+fn backup_dir(config: &Config, db: &Path) -> PathBuf {
+    match &config.database.backups.dir {
+        Some(dir) => config::expand(dir),
+        None => db
+            .parent()
+            .map(|p| p.join("backups"))
+            .unwrap_or_else(|| PathBuf::from("backups")),
+    }
+}
+
+/// Rotating backups for `db`, if configured. Backup file names do not say
+/// which database they copy, so a configured `dir` serves only the main
+/// database (`is_main`); others use their own `backups/` folder.
+fn backup_policy(config: &Config, db: &Path, is_main: bool) -> Option<BackupPolicy> {
+    let backups = &config.database.backups;
+    if backups.daily == 0 && backups.weekly == 0 || backups.dir.is_some() && !is_main {
+        return None;
+    }
+    Some(BackupPolicy {
+        dir: backup_dir(config, db),
+        daily: backups.daily,
+        weekly: backups.weekly,
+    })
+}
+
+/// The keychain, and nothing interactive: the TUI asks for a password itself.
+struct KeychainOnly<'a>(&'a Path);
+
+impl PasswordSource for KeychainOnly<'_> {
+    fn password(&mut self, _attempt: u32) -> Result<SecretString, StoreError> {
+        keychain::get(self.0)
+            .ok_or_else(|| StoreError::PasswordUnavailable("not in the keychain".into()))
     }
 }
 
@@ -126,7 +153,27 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             notes,
             parent,
         } => edit(&ctx, id, &changes, notes, parent)?,
-        Command::Done { ids } => {
+        Command::Done(Targets {
+            filter: Some(query),
+            yes,
+            ..
+        }) => bulk(&ctx, &query, Bulk::Done, yes)?,
+        Command::Reopen(Targets {
+            filter: Some(query),
+            yes,
+            ..
+        }) => bulk(&ctx, &query, Bulk::Reopen, yes)?,
+        Command::Cancel(Targets {
+            filter: Some(query),
+            yes,
+            ..
+        }) => bulk(&ctx, &query, Bulk::Cancel, yes)?,
+        Command::Rm(Targets {
+            filter: Some(query),
+            yes,
+            ..
+        }) => bulk(&ctx, &query, Bulk::Delete, yes)?,
+        Command::Done(Targets { ids, .. }) => {
             return per_task(&ctx, &ids, "Completed", |app, id| {
                 let done = app.complete(&[id])?.remove(0);
                 let mut line = format!("{}: {}", done.task.id, done.task.title);
@@ -140,19 +187,19 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Ok((serde_json::to_value(&done)?, line))
             });
         }
-        Command::Reopen { ids } => {
+        Command::Reopen(Targets { ids, .. }) => {
             return per_task(&ctx, &ids, "Reopened", |app, id| {
                 let t = app.reopen(&[id])?.remove(0);
                 Ok((serde_json::to_value(&t)?, format!("{}: {}", t.id, t.title)))
             });
         }
-        Command::Cancel { ids } => {
+        Command::Cancel(Targets { ids, .. }) => {
             return per_task(&ctx, &ids, "Cancelled", |app, id| {
                 let t = app.cancel(&[id])?.remove(0);
                 Ok((serde_json::to_value(&t)?, format!("{}: {}", t.id, t.title)))
             });
         }
-        Command::Rm { ids } => {
+        Command::Rm(Targets { ids, .. }) => {
             return per_task(&ctx, &ids, "Deleted", |app, id| {
                 let t = app.delete(&[id])?.remove(0);
                 Ok((serde_json::to_value(&t)?, format!("{}: {}", t.id, t.title)))
@@ -191,6 +238,12 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 }),
             }
         }
+        Command::Count {
+            query,
+            all,
+            no_context,
+        } => count(&ctx, &query, all, no_context)?,
+        Command::Open { id, n, all, print } => open_links(&ctx, id, n, all, print)?,
         Command::Search { text, all } => search(&ctx, &text.join(" "), all)?,
         Command::Checklist { task, action } => checklist(&ctx, task, action)?,
         Command::Block { id, on } => {
@@ -243,7 +296,26 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
     let app = ctx.open()?;
     let encrypted = app.store().mode() == DbMode::Encrypted;
     let ui = &ctx.config.ui;
-    let db = ctx.db.clone();
+    let config = ctx.config.clone();
+    let main_db = ctx.db.clone();
+    let open_db: ttask_tui::Opener = Box::new(move |path, password| {
+        let store = match password {
+            Some(password) => {
+                let store = Store::open(path, &mut password.clone())?;
+                if config.security.remember == Remember::Keychain {
+                    // Best effort: there is no terminal to warn on.
+                    let _ = keychain::set(path, password);
+                }
+                store
+            }
+            None => Store::open(path, &mut KeychainOnly(path))?,
+        };
+        let app = new_app(store, &config);
+        if let Some(policy) = backup_policy(&config, path, path == main_db) {
+            let _ = app.rotate_backups(&policy);
+        }
+        Ok(app)
+    });
     let settings = ttask_tui::Settings {
         theme: ui.theme,
         keymap: ui.keymap,
@@ -257,10 +329,12 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
             .idle_lock_minutes
             .filter(|m| *m > 0)
             .map(|m| std::time::Duration::from_secs(u64::from(m) * 60)),
-        unlock: Some(Box::new(move |password: &SecretString| {
-            Store::open(&db, &mut password.clone()).is_ok()
+        unlock: Some(Box::new(|db: &Path, password: &SecretString| {
+            Store::open(db, &mut password.clone()).is_ok()
         })),
         notify: Some(Box::new(remind::notify)),
+        open_db: Some(open_db),
+        open_link: Some(Box::new(ttask_app::launch::open_link)),
     };
     ttask_tui::run(app, settings)
 }
@@ -320,21 +394,7 @@ fn list(
     limit: Option<usize>,
 ) -> anyhow::Result<()> {
     let app = ctx.open()?;
-    let joined = query.join(" ");
-    let view = match query {
-        [name] => View::builtin_named(name).or_else(|| {
-            app.saved_filters()
-                .ok()?
-                .into_iter()
-                .find(|f| f.name.eq_ignore_ascii_case(name))
-                .map(|f| View::saved(&f))
-        }),
-        _ => None,
-    };
-    let (query, mut sort_order) = match &view {
-        Some(v) => (v.query.clone(), v.sort),
-        None => (joined, TaskSort::Smart),
-    };
+    let (query, mut sort_order) = resolve_query(&app, query);
     if let Some(sort) = sort {
         sort_order = sort.parse().map_err(|e: String| anyhow!(e))?;
     }
@@ -378,6 +438,172 @@ fn list(
             "{}",
             ctx.painter.paint(Tone::Dim, &format!("context: {name}"))
         );
+    }
+    Ok(())
+}
+
+/// A single word naming a view or saved filter becomes its query and sort;
+/// anything else is a filter query.
+fn resolve_query(app: &App, query: &[String]) -> (String, TaskSort) {
+    let view = match query {
+        [name] => View::builtin_named(name).or_else(|| {
+            app.saved_filters()
+                .ok()?
+                .into_iter()
+                .find(|f| f.name.eq_ignore_ascii_case(name))
+                .map(|f| View::saved(&f))
+        }),
+        _ => None,
+    };
+    match view {
+        Some(v) => (v.query, v.sort),
+        None => (query.join(" "), TaskSort::Smart),
+    }
+}
+
+fn count(ctx: &Ctx, query: &[String], all: bool, no_context: bool) -> anyhow::Result<()> {
+    let app = ctx.open()?;
+    let (query, _) = resolve_query(&app, query);
+    let extra = if all { "status:all wait:any" } else { "" };
+    let n = app.count(&query, extra, !no_context)?;
+    if ctx.json {
+        return ctx.print_json(&json!({ "count": n }));
+    }
+    println!("{n}");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Bulk {
+    Done,
+    Reopen,
+    Cancel,
+    Delete,
+}
+
+impl Bulk {
+    /// (`complete`, `Completed`)
+    fn verbs(self) -> (&'static str, &'static str) {
+        match self {
+            Bulk::Done => ("complete", "Completed"),
+            Bulk::Reopen => ("reopen", "Reopened"),
+            Bulk::Cancel => ("cancel", "Cancelled"),
+            Bulk::Delete => ("delete", "Deleted"),
+        }
+    }
+}
+
+/// `done/reopen/cancel/rm --filter QUERY`: one batch, so one undo.
+fn bulk(ctx: &Ctx, query: &str, action: Bulk, yes: bool) -> anyhow::Result<()> {
+    let mut app = ctx.open()?;
+    // Without a status term `ls` shows open tasks, which cannot be reopened.
+    let extra = match action {
+        Bulk::Reopen => "not status:open",
+        _ => "",
+    };
+    let tasks = app.list(query, extra, TaskSort::Smart)?;
+    let (verb, past) = action.verbs();
+    if tasks.is_empty() {
+        ctx.say("No tasks match.");
+        return Ok(());
+    }
+    if tasks.len() > 1 && !yes {
+        confirm_bulk(ctx, &app, &tasks, verb)?;
+    }
+    let ids: Vec<TaskId> = tasks.iter().map(|t| t.id).collect();
+    let changed: Vec<Task> = match action {
+        Bulk::Done => app.complete(&ids)?.into_iter().map(|c| c.task).collect(),
+        Bulk::Reopen => app.reopen(&ids)?,
+        Bulk::Cancel => app.cancel(&ids)?,
+        Bulk::Delete => app.delete(&ids)?,
+    };
+    if ctx.json {
+        return ctx.print_json(&changed);
+    }
+    for t in &changed {
+        ctx.say(format!("{past} task {}: {}", t.id, t.title));
+    }
+    if changed.len() > 1 {
+        ctx.say(format!(
+            "{past} {} tasks; `ttask undo` reverts them together",
+            changed.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Lists the tasks and asks on a terminal; elsewhere `--yes` is required.
+fn confirm_bulk(ctx: &Ctx, app: &App, tasks: &[Task], verb: &str) -> anyhow::Result<()> {
+    let n = tasks.len();
+    if !std::io::stdin().is_terminal() {
+        bail!("the filter matches {n} tasks; pass --yes to {verb} them all");
+    }
+    let today = app.today();
+    for task in tasks {
+        eprintln!("{}", task_line(task, 0, today, &ctx.painter));
+    }
+    if let Some((name, _)) = app.active_context()? {
+        eprintln!("(within context `{name}`)");
+    }
+    eprint!("{} these {n} tasks? [y/N] ", capitalise(verb));
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+        bail!("nothing changed");
+    }
+    Ok(())
+}
+
+fn capitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+fn open_links(
+    ctx: &Ctx,
+    id: TaskId,
+    n: Option<usize>,
+    all: bool,
+    print: bool,
+) -> anyhow::Result<()> {
+    let app = ctx.open()?;
+    let links = app.links(id)?;
+    if links.is_empty() {
+        bail!("task {id} has no http, https or mailto links");
+    }
+    let chosen: Vec<&String> = match n {
+        Some(n) => vec![
+            links
+                .get(n.wrapping_sub(1))
+                .ok_or_else(|| StoreError::NotFound(format!("link {n} of task {id}")))?,
+        ],
+        None if all || print || links.len() == 1 => links.iter().collect(),
+        None => {
+            for (i, link) in links.iter().enumerate() {
+                println!("{:>3}. {link}", i + 1);
+            }
+            bail!(
+                "task {id} has {} links; open one with `ttask open {id} <N>` or all with --all",
+                links.len()
+            );
+        }
+    };
+    if print {
+        if ctx.json {
+            return ctx.print_json(&chosen);
+        }
+        for link in chosen {
+            println!("{link}");
+        }
+        return Ok(());
+    }
+    for link in chosen {
+        ttask_app::launch::open_link(link).with_context(|| format!("opening {link}"))?;
+        ctx.say(format!("Opened {link}"));
     }
     Ok(())
 }
@@ -951,8 +1177,9 @@ fn import(
         }
         ImportFormat::Ticktick => io::ticktick_import(text, today)?,
         ImportFormat::Taskwarrior => io::taskwarrior_import(text, &app.clock().time_zone())?,
+        ImportFormat::Github => io::github_import(text, project, &app.clock().time_zone())?,
     };
-    let default_project = if matches!(format, ImportFormat::Todoist) {
+    let default_project = if matches!(format, ImportFormat::Todoist | ImportFormat::Github) {
         None
     } else {
         project
@@ -988,6 +1215,7 @@ fn guess_format(file: &Path, text: &str) -> ImportFormat {
     let first_line = text.lines().next().unwrap_or("").to_ascii_uppercase();
     match ext.as_str() {
         "json" if is_taskwarrior(text) => ImportFormat::Taskwarrior,
+        "json" if is_github(text) => ImportFormat::Github,
         "json" => ImportFormat::Json,
         "csv" if first_line.starts_with("TYPE,CONTENT") => ImportFormat::Todoist,
         "csv" if text.contains("\"List Name\"") || text.contains("List Name,") => {
@@ -995,6 +1223,7 @@ fn guess_format(file: &Path, text: &str) -> ImportFormat {
         }
         "csv" => ImportFormat::Csv,
         _ if is_taskwarrior(text) => ImportFormat::Taskwarrior,
+        _ if is_github(text) => ImportFormat::Github,
         _ if text.trim_start().starts_with('{') => ImportFormat::Json,
         _ => ImportFormat::Todotxt,
     }
@@ -1008,6 +1237,17 @@ fn is_taskwarrior(text: &str) -> bool {
     (start.starts_with('[') || start.starts_with("{\""))
         && head.contains("\"uuid\"")
         && head.contains("\"description\"")
+        && !head.contains("\"format\"")
+}
+
+/// A GitHub issue list: objects with `number`, `title` and a github.com URL.
+fn is_github(text: &str) -> bool {
+    let head: String = text.chars().take(4096).collect();
+    let start = head.trim_start();
+    (start.starts_with('[') || start.starts_with('{'))
+        && head.contains("\"number\"")
+        && head.contains("\"title\"")
+        && head.contains("github.com/")
         && !head.contains("\"format\"")
 }
 

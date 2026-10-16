@@ -2,7 +2,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tempfile::TempDir;
 use ttask_app::App;
 use ttask_core::jiff::civil::date;
-use ttask_core::{FixedClock, Status};
+use ttask_core::{FixedClock, Status, TaskId};
 use ttask_store::Store;
 
 use super::*;
@@ -295,7 +295,7 @@ fn idle_lock_hides_data_until_password() {
     let settings = Settings {
         encrypted: true,
         idle_lock: Some(std::time::Duration::from_millis(0)),
-        unlock: Some(Box::new(|p| {
+        unlock: Some(Box::new(|_, p| {
             secrecy::ExposeSecret::expose_secret(p) == "open sesame"
         })),
         ..Settings::default()
@@ -415,4 +415,297 @@ fn next_view_and_urgency_in_detail() {
     assert_eq!(titles(&tui), ["Important", "Low"]);
     let screen = render_to_string(&mut tui, 130, 20);
     assert!(screen.contains("urgency 24.8"), "{screen}");
+}
+
+#[test]
+fn search_shows_results_while_typing_and_esc_restores_the_view() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Invoice ACME due:today");
+    add(&mut tui, "Call mum due:today");
+    press(&mut tui, "f");
+    press(&mut tui, "acme");
+    assert!(matches!(tui.mode, Mode::Prompt(_)), "still typing");
+    assert_eq!(tui.current.kind, ttask_app::ViewKind::Search);
+    assert_eq!(titles(&tui), ["Invoice ACME"]);
+    let screen = render_to_string(&mut tui, 120, 20);
+    assert!(screen.contains("Search: acme"), "{screen}");
+    key(&mut tui, KeyCode::Esc);
+    assert_eq!(tui.current.name, "Today");
+    assert_eq!(titles(&tui).len(), 2);
+
+    // Enter keeps the results and focuses the list.
+    press(&mut tui, "f");
+    press(&mut tui, "mum");
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(tui.mode, Mode::Normal));
+    assert_eq!(titles(&tui), ["Call mum"]);
+    assert_eq!(tui.focus, Focus::List);
+}
+
+#[test]
+fn footer_hints_fit_the_minimum_terminal() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    let screen = render_to_string(&mut tui, 80, 24);
+    let footer = screen.lines().last().unwrap();
+    assert!(footer.contains("f search"), "{footer}");
+    assert!(footer.contains("q quit"), "{footer}");
+}
+
+#[test]
+fn clipboard_payload_is_base64() {
+    assert_eq!(base64(b""), "");
+    assert_eq!(base64(b"f"), "Zg==");
+    assert_eq!(base64(b"fo"), "Zm8=");
+    assert_eq!(base64(b"foo"), "Zm9v");
+    assert_eq!(base64("Zażółć".as_bytes()), "WmHFvMOzxYLEhw==");
+}
+
+/// Settings whose opener opens plain or encrypted files with a fixed clock.
+fn opener_settings() -> Settings {
+    Settings {
+        open_db: Some(Box::new(|path, password| {
+            let mut none = secrecy::SecretString::from(String::new());
+            let store = match password {
+                Some(p) => Store::open(path, &mut p.clone())?,
+                None => Store::open(path, &mut none)?,
+            };
+            Ok(App::new(store, FixedClock::on(date(2026, 10, 15))))
+        })),
+        unlock: Some(Box::new(|_, _| true)),
+        ..Settings::default()
+    }
+}
+
+fn type_path(tui: &mut Tui, path: &std::path::Path) {
+    press(tui, "O");
+    ctrl(tui, 'u');
+    for c in path.display().to_string().chars() {
+        tui.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+fn prompt(tui: &Tui) -> &crate::state::Prompt {
+    match &tui.mode {
+        Mode::Prompt(p) => p,
+        _ => panic!("a prompt is open"),
+    }
+}
+
+#[test]
+fn open_another_database_checks_the_file_first() {
+    let dir = TempDir::new().unwrap();
+    let other = dir.path().join("other.db");
+    {
+        let store = Store::create(&other, None).unwrap();
+        let mut app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+        app.add("From the other file due:today", None, None)
+            .unwrap();
+    }
+    let notes = dir.path().join("notes.txt");
+    std::fs::write(&notes, "not a database").unwrap();
+
+    let store = Store::create(&dir.path().join("t.db"), None).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let mut tui = Tui::new(app, opener_settings()).unwrap();
+    add(&mut tui, "Mine due:today");
+
+    type_path(&mut tui, &notes);
+    key(&mut tui, KeyCode::Enter);
+    let error = prompt(&tui).error.clone().unwrap_or_default();
+    assert!(error.contains("not a ttask database"), "{error}");
+    let screen = render_to_string(&mut tui, 120, 20);
+    assert!(screen.contains("not a ttask database"), "{screen}");
+    key(&mut tui, KeyCode::Esc);
+    assert_eq!(titles(&tui), ["Mine"]);
+
+    type_path(&mut tui, &other);
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(tui.mode, Mode::Normal));
+    assert_eq!(titles(&tui), ["From the other file"]);
+    assert_eq!(tui.app.store().path(), other);
+    assert!(tui.status.as_ref().unwrap().text.starts_with("Opened"));
+}
+
+#[test]
+fn open_an_encrypted_database_asks_for_its_password() {
+    let dir = TempDir::new().unwrap();
+    let secret = dir.path().join("secret.db");
+    let password = secrecy::SecretString::from("correct horse battery".to_owned());
+    {
+        let store = Store::create(&secret, Some(&password)).unwrap();
+        let mut app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+        app.add("Hidden due:today", None, None).unwrap();
+    }
+    let store = Store::create(&dir.path().join("t.db"), None).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let mut tui = Tui::new(app, opener_settings()).unwrap();
+
+    type_path(&mut tui, &secret);
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(
+        prompt(&tui).kind,
+        crate::state::PromptKind::Password(_)
+    ));
+    press(&mut tui, "wrong");
+    let screen = render_to_string(&mut tui, 120, 20);
+    assert!(screen.contains("Password: *****"), "{screen}");
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(prompt(&tui).error.as_deref(), Some("Wrong password"));
+    press(&mut tui, "correct horse battery");
+    key(&mut tui, KeyCode::Enter);
+    assert!(matches!(tui.mode, Mode::Normal));
+    assert_eq!(titles(&tui), ["Hidden"]);
+    assert!(tui.settings.encrypted);
+}
+
+#[test]
+fn tab_completes_paths_in_the_open_prompt() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("work.db"), b"").unwrap();
+    std::fs::write(dir.path().join("wiki.db"), b"").unwrap();
+    std::fs::create_dir(dir.path().join("archive")).unwrap();
+    let store = Store::create(&dir.path().join("t.db"), None).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let mut tui = Tui::new(app, opener_settings()).unwrap();
+
+    type_path(&mut tui, &dir.path().join("wo"));
+    key(&mut tui, KeyCode::Tab);
+    let text = prompt(&tui).input.text();
+    assert!(text.ends_with("work.db"), "{text}");
+
+    type_path(&mut tui, &dir.path().join("w"));
+    key(&mut tui, KeyCode::Tab);
+    assert_eq!(prompt(&tui).hint.as_deref(), Some("wiki.db  work.db"));
+
+    type_path(&mut tui, &dir.path().join("arc"));
+    key(&mut tui, KeyCode::Tab);
+    let text = prompt(&tui).input.text();
+    assert!(
+        text.ends_with(&format!("archive{}", std::path::MAIN_SEPARATOR)),
+        "{text}"
+    );
+}
+
+#[test]
+fn open_link_opens_one_or_offers_a_choice() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let dir = TempDir::new().unwrap();
+    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+    let sink = opened.clone();
+    let settings = Settings {
+        open_link: Some(Box::new(move |link| {
+            sink.borrow_mut().push(link.to_owned());
+            Ok(())
+        })),
+        ..Settings::default()
+    };
+    let store = Store::create(&dir.path().join("t.db"), None).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let mut tui = Tui::new(app, settings).unwrap();
+    add(&mut tui, "Read https://example.com/one due:today");
+    press(&mut tui, "o");
+    assert_eq!(*opened.borrow(), ["https://example.com/one"]);
+
+    let id = tui.tasks[0].0.id;
+    tui.app
+        .set_notes(id, "also [two](https://example.com/two)")
+        .unwrap();
+    tui.reload();
+    press(&mut tui, "o");
+    assert!(matches!(tui.mode, Mode::Palette(_)));
+    let screen = render_to_string(&mut tui, 120, 30);
+    assert!(screen.contains("Open link"), "{screen}");
+    key(&mut tui, KeyCode::Down);
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(
+        *opened.borrow(),
+        ["https://example.com/one", "https://example.com/two"]
+    );
+
+    add(&mut tui, "No links here due:today");
+    select(&mut tui, "No links here");
+    press(&mut tui, "o");
+    assert!(tui.status.as_ref().unwrap().error);
+}
+
+fn select(tui: &mut Tui, title: &str) -> TaskId {
+    let i = tui
+        .tasks
+        .iter()
+        .position(|(t, _)| t.title == title)
+        .unwrap_or_else(|| panic!("no task `{title}` in {:?}", titles(tui)));
+    tui.task_idx = i;
+    tui.reload();
+    tui.tasks[i].0.id
+}
+
+#[test]
+fn dependencies_parent_history_copy_sort_and_lock_keys() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Buy paint due:today");
+    add(&mut tui, "Paint the shed due:today");
+    let paint = select(&mut tui, "Buy paint");
+    let shed = select(&mut tui, "Paint the shed");
+
+    // b: the shed waits on the paint; clearing the prompt removes it again.
+    press(&mut tui, "b");
+    press(&mut tui, &paint.to_string());
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(tui.app.detail(shed).unwrap().blocked_by[0].id, paint);
+    select(&mut tui, "Paint the shed");
+    press(&mut tui, "b");
+    ctrl(&mut tui, 'u');
+    key(&mut tui, KeyCode::Enter);
+    assert!(tui.app.detail(shed).unwrap().blocked_by.is_empty());
+
+    // P: make it a subtask, then top level again.
+    select(&mut tui, "Paint the shed");
+    press(&mut tui, "P");
+    press(&mut tui, &paint.to_string());
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(tui.app.task(shed).unwrap().parent_id, Some(paint));
+    select(&mut tui, "Paint the shed");
+    press(&mut tui, "P");
+    ctrl(&mut tui, 'u');
+    press(&mut tui, "none");
+    key(&mut tui, KeyCode::Enter);
+    assert_eq!(tui.app.task(shed).unwrap().parent_id, None);
+
+    // H: history popup.
+    select(&mut tui, "Paint the shed");
+    press(&mut tui, "H");
+    let Mode::History { entries, .. } = &tui.mode else {
+        panic!("history popup expected");
+    };
+    assert!(entries.len() >= 3, "{entries:?}");
+    let screen = render_to_string(&mut tui, 120, 30);
+    assert!(screen.contains("History: Paint the shed"), "{screen}");
+    key(&mut tui, KeyCode::Esc);
+    assert!(matches!(tui.mode, Mode::Normal));
+
+    // y / Y: copy the title and the id.
+    press(&mut tui, "y");
+    assert_eq!(
+        tui.take_clipboard_request().as_deref(),
+        Some("Paint the shed")
+    );
+    press(&mut tui, "Y");
+    assert_eq!(tui.take_clipboard_request(), Some(shed.to_string()));
+
+    // Ctrl-S cycles the sort until another view opens.
+    ctrl(&mut tui, 's');
+    assert_eq!(tui.sort(), ttask_store::TaskSort::Urgency);
+    let screen = render_to_string(&mut tui, 120, 20);
+    assert!(screen.contains("by urgency"), "{screen}");
+    tui.open_view(ttask_app::View::all());
+    assert_eq!(tui.sort_override, None);
+
+    // L only locks encrypted databases.
+    press(&mut tui, "L");
+    assert!(tui.status.as_ref().unwrap().error);
+    assert!(matches!(tui.mode, Mode::Normal));
 }

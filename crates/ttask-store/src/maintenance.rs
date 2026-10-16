@@ -7,7 +7,7 @@ use rusqlite::{Connection, params};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::migrations::schema_version;
-use crate::open::{DbMode, FileState, Store, detect, sibling};
+use crate::open::{APPLICATION_ID, DbMode, FileState, Store, detect, sibling};
 use crate::{Result, StoreError};
 
 /// Copies the whole database into a new file at `dest`.
@@ -34,9 +34,10 @@ pub(crate) fn export_to(conn: &Connection, dest: &Path, key: Option<&str>) -> Re
     };
     let result = (|| -> Result<()> {
         conn.query_row("SELECT sqlcipher_export('ttask_export')", [], |_| Ok(()))?;
-        // sqlcipher_export copies schema and data, not user_version.
+        // sqlcipher_export copies schema and data, not the header fields.
         let version = schema_version(conn)?;
         conn.pragma_update(Some("ttask_export"), "user_version", version)?;
+        conn.pragma_update(Some("ttask_export"), "application_id", APPLICATION_ID)?;
         Ok(())
     })();
     conn.execute("DETACH DATABASE ttask_export", [])?;

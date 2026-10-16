@@ -4,6 +4,7 @@
 //! duplicating.
 
 mod formats;
+mod github;
 mod ics;
 mod taskwarrior;
 
@@ -21,6 +22,7 @@ pub use formats::{
     csv_export, csv_import, markdown_export, ticktick_import, todoist_import, todotxt_export,
     todotxt_import,
 };
+pub use github::github_import;
 pub use ics::ics_export;
 pub use taskwarrior::taskwarrior_import;
 
