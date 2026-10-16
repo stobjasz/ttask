@@ -19,6 +19,8 @@ pub struct Config {
     pub urgency: ttask_core::urgency::UrgencyWeights,
     /// Pomodoro lengths for the TUI's focus mode.
     pub focus: ttask_tui::FocusSettings,
+    /// Commands run after tasks are added, changed, completed or deleted.
+    pub hooks: ttask_app::HookConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

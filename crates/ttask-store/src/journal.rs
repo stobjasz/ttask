@@ -281,6 +281,16 @@ impl Db<'_> {
     }
 
     /// Starts a new undoable batch, discarding anything that was undone.
+    /// `(task, kind)` for each event of `batch`, in order (`kind` as
+    /// [`EventKind::as_str`]).
+    pub fn batch_changes(&self, batch: i64) -> Result<Vec<(TaskId, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT task_id, kind FROM events WHERE batch_id = ?1 ORDER BY id")?;
+        let rows = stmt.query_map([batch], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn begin_batch(&self) -> Result<i64> {
         self.conn
             .execute("DELETE FROM events WHERE undone = 1", [])?;

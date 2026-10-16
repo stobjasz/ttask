@@ -140,6 +140,18 @@ impl Db<'_> {
             .optional()?)
     }
 
+    /// A soft-deleted task, as it was when deleted.
+    pub fn deleted_task(&self, id: TaskId) -> Result<Option<Task>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("{TASK_SELECT} WHERE t.id = ?1 AND t.deleted_at IS NOT NULL"),
+                [id],
+                task_from_row,
+            )
+            .optional()?)
+    }
+
     pub fn task_by_uid(&self, uid: &str) -> Result<Option<Task>> {
         Ok(self
             .conn

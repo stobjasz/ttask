@@ -287,6 +287,8 @@ impl Tui {
         if let Err(e) = self.try_reload() {
             self.error(e.to_string());
         }
+        // Every change ends in a reload, so this catches hooks run by any of them.
+        self.report_hook_warnings();
     }
 
     fn try_reload(&mut self) -> anyhow::Result<()> {
@@ -421,6 +423,14 @@ impl Tui {
             Err(e) => self.error(e.to_string()),
         }
         self.reload();
+    }
+
+    /// Hook failures since the last call, shown in the status line.
+    fn report_hook_warnings(&mut self) {
+        let warnings = self.app.take_hook_warnings();
+        if !warnings.is_empty() {
+            self.error(warnings.join("; "));
+        }
     }
 
     // ------------------------------------------------------------ timers

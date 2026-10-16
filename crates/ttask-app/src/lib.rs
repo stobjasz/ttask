@@ -5,6 +5,7 @@
 mod backups;
 mod detail;
 pub mod editor;
+mod hooks;
 pub mod io;
 pub mod launch;
 mod reports;
@@ -28,6 +29,7 @@ use ttask_store::{
 
 pub use backups::{BackupPolicy, RotationReport};
 pub use detail::TaskDetail;
+pub use hooks::{HookConfig, HookPayload};
 pub use reports::{ProjectTime, Report, WeekCount};
 pub use templates::{Template, TemplateKind, TemplateTask, UseTemplate};
 pub use ttask_store::{Reminder, TimeEntry};
@@ -77,6 +79,9 @@ pub struct App {
     store: Store,
     clock: Box<dyn Clock>,
     urgency: UrgencyWeights,
+    hooks: Option<HookConfig>,
+    hook_reporter: Option<Box<dyn Fn(&str)>>,
+    hook_warnings: Vec<String>,
 }
 
 /// The `meta` key holding the active context's saved-filter name.
@@ -90,6 +95,9 @@ impl App {
             store,
             clock: Box::new(clock),
             urgency: UrgencyWeights::default(),
+            hooks: None,
+            hook_reporter: None,
+            hook_warnings: Vec::new(),
         }
     }
 
@@ -874,16 +882,23 @@ impl App {
     // ------------------------------------------------------------- plumbing
 
     /// Runs `f` as one transaction and one undo batch.
+    /// Runs `f` as one transaction and one undo step, then the hooks.
     fn batch<T>(&mut self, f: impl FnOnce(&Batch<'_, '_>) -> Result<T>) -> Result<T> {
         let now = self.now_ms();
-        self.store.write_with(|db| {
+        let mut batch_id = None;
+        let out = self.store.write_with(|db| {
             let batch = Batch {
                 db,
                 id: db.begin_batch()?,
                 now,
             };
+            batch_id = Some(batch.id);
             f(&batch)
-        })
+        })?;
+        if let Some(id) = batch_id.filter(|_| self.hooks.is_some()) {
+            self.run_hooks(id);
+        }
+        Ok(out)
     }
 }
 

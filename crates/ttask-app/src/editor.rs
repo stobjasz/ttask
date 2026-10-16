@@ -30,7 +30,7 @@ pub fn editor_command() -> Vec<String> {
 }
 
 /// Splits on whitespace, honouring double quotes (`"C:\Program Files\x.exe" -w`).
-fn split_command(cmd: &str) -> Vec<String> {
+pub(crate) fn split_command(cmd: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut quoted = false;

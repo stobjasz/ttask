@@ -823,3 +823,81 @@ fn project_templates_copy_open_tasks_into_a_new_project() {
             .is_err()
     );
 }
+
+/// A shell command that saves its stdin to `path`.
+fn save_stdin_to(path: &std::path::Path) -> String {
+    if cfg!(windows) {
+        format!("cmd /C more > \"{}\"", path.display())
+    } else {
+        format!("sh -c \"cat > '{}'\"", path.display())
+    }
+}
+
+#[test]
+fn hooks_get_the_changed_tasks_once_per_event() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let (added, completed) = (dir.path().join("add.json"), dir.path().join("done.json"));
+    app.set_hooks(
+        HookConfig {
+            on_add: Some(save_stdin_to(&added)),
+            on_complete: Some(save_stdin_to(&completed)),
+            ..HookConfig::default()
+        },
+        None,
+    );
+    let a = app
+        .add("Water plants every:3d due:today", None, None)
+        .unwrap();
+    let b = app.add("Feed cat", None, None).unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&added).unwrap()).unwrap();
+    assert_eq!(payload["event"], "add");
+    assert_eq!(payload["tasks"][0]["title"], "Feed cat");
+
+    app.complete(&[a.id, b.id]).unwrap();
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&completed).unwrap()).unwrap();
+    let titles: Vec<&str> = payload["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Water plants", "Feed cat"], "one run for both");
+    // Completing a recurring task spawned the next one: an `add`.
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&added).unwrap()).unwrap();
+    assert_eq!(payload["tasks"][0]["title"], "Water plants");
+    assert!(app.take_hook_warnings().is_empty());
+}
+
+#[test]
+fn failing_hooks_warn_but_do_not_undo_the_change() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let fail = if cfg!(windows) {
+        "cmd /C exit 3"
+    } else {
+        "sh -c \"exit 3\""
+    };
+    app.set_hooks(
+        HookConfig {
+            on_add: Some(fail.into()),
+            on_delete: Some("no-such-program-for-ttask".into()),
+            ..HookConfig::default()
+        },
+        None,
+    );
+    let task = app.add("Still saved", None, None).unwrap();
+    app.delete(&[task.id]).unwrap();
+    let warnings = app.take_hook_warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("on_add: exited with 3"),
+        "{warnings:?}"
+    );
+    assert!(warnings[1].contains("cannot run"), "{warnings:?}");
+    app.undo().unwrap();
+    assert_eq!(app.task(task.id).unwrap().title, "Still saved");
+}

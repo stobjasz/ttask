@@ -77,6 +77,10 @@ impl Ctx {
 fn new_app(store: Store, config: &Config) -> App {
     let mut app = App::new(store, SystemClock::new());
     app.set_urgency_weights(config.urgency.clone());
+    app.set_hooks(
+        config.hooks.clone(),
+        Some(Box::new(|message| eprintln!("warning: {message}"))),
+    );
     app
 }
 
@@ -316,7 +320,9 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
     if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         bail!("the TUI needs a terminal; try `ttask ls` or `ttask --help`");
     }
-    let app = ctx.open()?;
+    let mut app = ctx.open()?;
+    // The TUI shows hook problems in its status line, not on stderr.
+    app.set_hooks(ctx.config.hooks.clone(), None);
     let encrypted = app.store().mode() == DbMode::Encrypted;
     let ui = &ctx.config.ui;
     let config = ctx.config.clone();
@@ -333,7 +339,9 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
             }
             None => Store::open(path, &mut KeychainOnly(path))?,
         };
-        let app = new_app(store, &config);
+        let mut app = new_app(store, &config);
+        // The TUI shows hook problems in its status line.
+        app.set_hooks(config.hooks.clone(), None);
         if let Some(policy) = backup_policy(&config, path, path == main_db) {
             let _ = app.rotate_backups(&policy);
         }
