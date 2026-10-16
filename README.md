@@ -44,6 +44,8 @@ ttask ls today --json       # every read command speaks JSON
 ttask show 12 --history
 ttask edit 12 'due:+3d -+later !urgent New title'
 ttask edit 12               # $EDITOR on a TOML form
+ttask edit --filter '+later' -- -+later +someday   # every match, one undo step
+ttask dup 12 'due:+1w'      # copy with checklist and subtasks, dates moved
 ttask done 12 13            # recurring tasks spawn their next instance
 ttask reopen | cancel | rm | skip <ids>
 ttask done --filter '+bills due:<=today' [--yes]   # also reopen/cancel/rm; one undo step
@@ -54,6 +56,7 @@ ttask search invoice
 ttask checklist 12 add passport ; ttask checklist 12 toggle 1
 ttask block 12 --on 9       # 12 waits on 9
 ttask timer start 12 ; ttask timer stop
+ttask timer log 12 1h30m yesterday@14:00 ; ttask timer ls 12 ; ttask timer edit 31 45m ; ttask timer rm 31
 ttask annotate 12 called back      # timestamped line in the notes
 ttask report [--weeks 8]           # done per week, time per project, overdue trend
 ttask template save release --from 12 ; ttask template use release 'v2.1 due:fri'
@@ -63,6 +66,8 @@ ttask context define work '#work' ; ttask context none   # focus every list on o
 ttask import tasks.json | todo.txt | export.csv | taskwarrior.json | issues.json [--dry-run] [--map title=Name]
 ttask export --format json|csv|markdown|todotxt|ics [--output f] [--encrypt] [--filter Q]
 ttask remind [--run | --install | --uninstall]
+ttask remind snooze [12] 1h        # no id: what just reminded you
+ttask capture [file]               # lines of the capture file become tasks
 ttask db info|backup|check|passwd|encrypt|decrypt|gc|gc-backups
 ttask gc ; ttask lock ; ttask config [path|init] ; ttask completions powershell
 ```
@@ -99,11 +104,15 @@ database (other files are refused before anything is written to them).
 | `n` | timestamped note | `>` / `<` | due a day later / earlier |
 | `W` | weekly review (`]` `[` steps) | `F` | focus mode (Pomodoro) |
 | `R` | reports | `Ctrl-t` | save task as template |
+| `i` | time log (log, edit, remove) | `p` | duplicate |
+| `z` | snooze reminder | | |
 | `?` | help | `q` | quit |
 
 The sidebar's **Agenda** view is a Monday–Sunday grid (`h`/`l` days, `]`/`[`
 weeks). The mouse selects views, tasks and agenda cells, toggles checkboxes and
-scrolls; `[ui] mouse = false` turns it off. Notes render as Markdown.
+scrolls; `[ui] mouse = false` turns it off. Notes render as Markdown. Estimates
+add up: the header shows the current view's planned time, each agenda day its
+own, and `ttask ls` prints the total on stderr.
 
 `keymap = "simple"` drops the vim keys (reorder with `Alt-↑/↓`); any action
 can be rebound under `[keys]` in the config.
@@ -123,6 +132,9 @@ path`, override with `TTASK_CONFIG`). Highlights:
 - `[focus]` Pomodoro lengths; `[hooks] on_add / on_modify / on_complete /
   on_delete` run your commands with the changed tasks as JSON on stdin (they
   see decrypted data, so configure only commands you trust).
+- `[capture] file = "~/Dropbox/ttask-inbox.txt"` — a plain-text inbox, e.g.
+  written from a phone: one quick-add line per task. The TUI, `ttask capture`
+  and `ttask remind --run` turn the lines into tasks and empty the file.
 
 For an encrypted database the password comes from `--password-file`, else
 `password_cmd`, the keychain, `TTASK_PASSWORD` (warns), then a prompt. A

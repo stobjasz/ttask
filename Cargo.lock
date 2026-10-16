@@ -3641,7 +3641,7 @@ dependencies = [
 
 [[package]]
 name = "ttask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "age",
  "anyhow",
@@ -3666,7 +3666,7 @@ dependencies = [
 
 [[package]]
 name = "ttask-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "csv",
  "secrecy",
@@ -3680,7 +3680,7 @@ dependencies = [
 
 [[package]]
 name = "ttask-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "serde",
@@ -3690,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "ttask-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "secrecy",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "ttask-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "nucleo-matcher",

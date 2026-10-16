@@ -226,6 +226,27 @@ Added task 3: Book flights (due 2026-10-16)
 
 ---
 
+### Capture file
+
+To add tasks from a phone (or anything that can append to a text file), set a capture file in a folder your phone syncs:
+
+```toml
+[capture]
+file = "~/Dropbox/ttask-inbox.txt"
+```
+
+Write one task per line in quick-add syntax (`Buy milk +shop due:sat`). Bullets and empty checkboxes from notes apps (`- `, `* `, `• `, `[ ]`) are ignored. ttask turns the lines into tasks and takes them out of the file:
+
+- the TUI reads it when it starts and every 30 seconds;
+- `ttask remind --run` reads it, so with `ttask remind --install` it's picked up every 5 minutes;
+- `ttask capture` reads it on demand (`ttask capture other.txt` reads another file).
+
+Captured tasks go to the Inbox unless their tokens say otherwise; the active context doesn't apply. A line whose tokens don't parse is kept whole as the title, with a warning, so nothing is lost. Each read is one undo step. Lines added to the file while ttask reads it stay for next time.
+
+The capture file is plain text: anything you write there is as private as the synced folder, even when the database is encrypted. It's a one-way inbox, not sync: nothing is written back to the phone.
+
+---
+
 ## 6. Finding tasks: views and filters
 
 ```sh
@@ -389,6 +410,25 @@ ttask edit 12 --parent 4                    # make it a subtask of 4 (--parent 0
 ```
 
 Put `--notes`/`--parent` **before** the change tokens (`edit` accepts tokens beginning with `-`, so options after them would be read as tokens).
+
+**By filter.** `--filter QUERY` changes every task `ttask ls QUERY` shows (within the active context) in one undo step, and asks first when more than one task matches, as `done --filter` does ([Status changes](#status-changes)). Put `--` before changes that begin with `-`:
+
+```sh
+ttask edit --filter '+later' -- -+later +someday   # retag everything at once
+ttask edit --filter '#clientA is:overdue' --yes 'due:fri !high'
+```
+
+### Duplicate
+
+`ttask dup` (or `duplicate`) copies tasks with their notes, project, tags, priority, estimate, recurrence, dependencies, checklist (unchecked) and subtasks (reopened), then applies quick-add changes to the copies. Moving the due date moves the subtasks' dates and the reminders by as many days:
+
+```sh
+ttask dup 12                       # an exact copy
+ttask dup 12 'due:+1w Sprint 43'   # next week's copy, with a new title
+ttask dup 12 13 '#clientB'         # copy two tasks into another project
+```
+
+A copy of a subtask stays under the same parent. `p` in the TUI does the same. One undo removes the copies.
 
 ### Edit in your editor
 
@@ -624,6 +664,24 @@ ttask timer stop
 
 Tracked time appears in `ttask show` and in the TUI detail pane; the TUI header shows the running timer. Focus mode (`F` in the TUI, [§12](#12-the-tui)) runs the timer for you in Pomodoro phases.
 
+**Fixing the log.** Forgot to start the timer, or left it running over lunch? Log time by hand and correct or remove entries. A spec is a length and an optional start:
+
+```sh
+ttask timer log 12 45m                       # 45 minutes, ending now
+ttask timer log 12 1h30m yesterday@14:00     # a start date and time
+ttask timer log 12 2h mon                    # a date alone keeps the current time of day
+ttask timer ls 12                            # the task's entries with their ids
+ttask timer ls --days 7                      # every task's entries this past week
+ttask timer edit 31 45m                      # new length, same start
+ttask timer edit 31 9:15                     # new start, same length
+ttask timer edit 31 45m yesterday@9:15       # both
+ttask timer rm 31 32
+```
+
+An entry can't end in the future. Logging, editing and removing are each one undo step; starting and stopping the timer isn't, and undoing something else never touches entries the timer made. In the TUI, `i` opens the task's time log: `a` logs time, `e` edits the selected entry, `d` removes it, `u` undoes.
+
+**Planned time.** Estimates (`~30m`) add up: `ttask ls` prints `5 open tasks, ~3h30m estimated` after the list (on stderr, so scripts reading the list aren't affected), the TUI header shows `~3h30m planned` for the current view, and each Agenda day shows its total.
+
 ### Reports
 
 ```sh
@@ -641,12 +699,16 @@ Time per project since 2026-08-24
   work      ██████████████████████ 12h 30m
   Inbox     ███                     1h 45m
 
+Estimates vs tracked (done tasks with both)
+  2026-W41  -
+  2026-W42   3 tasks  estimated 4h      tracked 5h10m   29% over
+
 Overdue at the end of each week
   2026-W41  ████████                4
   2026-W42  ████                    2
 ```
 
-**Completed** counts done tasks (not cancelled). **Time** adds up the time log over the same weeks. **Overdue** counts the open tasks that were past their due date on the last day of each week (today, for this week). It uses each task's current due date, so moving a due date later also takes the task out of the earlier weeks. `R` in the TUI shows the same report.
+**Completed** counts done tasks (not cancelled). **Time** adds up the time log over the same weeks. **Estimates vs tracked** compares, week by week, the estimates of done tasks with the time logged on them (only tasks that have both count). **Overdue** counts the open tasks that were past their due date on the last day of each week (today, for this week). It uses each task's current due date, so moving a due date later also takes the task out of the earlier weeks. `R` in the TUI shows the same report.
 
 ---
 
@@ -726,7 +788,18 @@ ttask remind --run          # fire anything due now (what the job runs)
 | macOS | a launchd agent `~/Library/LaunchAgents/com.ttask.remind.plist` |
 | Linux | a systemd user timer `ttask-remind.timer` (or prints a crontab line if systemd isn't available) |
 
-The job registers the database path you used with `--install`. For an **encrypted** database the job can't prompt for a password, so enable the keychain first (`remember = "keychain"`, see [§13](#13-encryption-and-passwords)) and open the database once interactively so the password is cached.
+The job registers the database path you used with `--install`. It also empties the [capture file](#capture-file), if you set one. For an **encrypted** database the job can't prompt for a password, so enable the keychain first (`remember = "keychain"`, see [§13](#13-encryption-and-passwords)) and open the database once interactively so the password is cached.
+
+### Snoozing
+
+`ttask remind snooze` adds another reminder to a task. Give a length (`15m`, `1h30m`, `2d`, `1w`; a day is 24 hours here), a clock time (`18:00`, `6pm`: today, or tomorrow once it has passed) or a date (`tom`, `mon@8am`; 09:00 without a time). Without one it's 15 minutes. Without task ids it snoozes the tasks whose reminders fired in the last 30 minutes, which is what you want right after a notification:
+
+```sh
+ttask remind snooze 1h          # whatever just reminded you, again in an hour
+ttask remind snooze 12 tom@8am
+```
+
+In the TUI the reminder line says `z snoozes`: for ten minutes after a reminder `z` snoozes that task; otherwise `z` sets a reminder on the selected (or marked) tasks. Snoozing is one undo step.
 
 ---
 
@@ -755,7 +828,7 @@ Start it with `ttask` (no arguments). It needs an interactive terminal of at lea
  a add · e edit · x done · / filter · f search · : palette · ? help · q quit
 ```
 
-- **Header:** current view, task count, active context (`@work`), active filter, a changed sort order (`by urgency`), marked count, running timer, and `[L]` for an encrypted database.
+- **Header:** current view, task count, the estimates of its open tasks (`~2h30m planned`), active context (`@work`), active filter, a changed sort order (`by urgency`), marked count, running timer, and `[L]` for an encrypted database.
 - **Sidebar:** built-in views with open counts, projects (subprojects indented), tags in use, saved filters.
 - **List:** the tasks of the selected view; subtasks indented under their parent.
 - **Detail:** everything about the selected task, including checklist and subtasks, and the notes rendered as Markdown (headings, lists, `- [ ]` task lists, quotes, code, **bold**, *italic*, links). It appears when the terminal is at least 100 columns wide; on narrower terminals press `Enter` for a full-screen detail view.
@@ -792,6 +865,9 @@ The TUI refreshes automatically when another process (e.g. `ttask add` in anothe
 | `s` | skip a recurring task to its next occurrence |
 | `D`, `Delete` | delete (asks for confirmation) |
 | `T` | start / stop the timer on the selected task |
+| `i` | time log: log time by hand, edit or remove entries |
+| `p` | duplicate (a prompt takes changes for the copy, e.g. `due:+1w`) |
+| `z` | snooze the last reminder, or remind me about the selected task |
 | `/` | filter the current view |
 | `f`, `Ctrl-f` | full-text search over every task, open or closed; results update as you type |
 | `S` | save the current view + filter as a saved filter |
@@ -866,7 +942,7 @@ Several keys open a one-line prompt in the footer. Editing keys work as in a she
 
 ### Agenda
 
-Select **Agenda** in the sidebar for a Monday–Sunday grid. Each day lists what is due that day, or scheduled that day if it has no due date, with done tasks dimmed. `h` / `l` move between days (left of Monday is the sidebar), `j` / `k` between tasks, and `]` / `[` between weeks. The selected day works like any list: `x`, `e`, `d`, `>` / `<` (move to the next or previous day) and the rest act on its tasks, and `a` adds a task due that day. `Enter` shows the task full-screen.
+Select **Agenda** in the sidebar for a Monday–Sunday grid. Each day lists what is due that day, or scheduled that day if it has no due date, with done tasks dimmed; its heading adds up the estimates of its open tasks (`Thu 15 ~3h`). `h` / `l` move between days (left of Monday is the sidebar), `j` / `k` between tasks, and `]` / `[` between weeks. The selected day works like any list: `x`, `e`, `d`, `>` / `<` (move to the next or previous day) and the rest act on its tasks, and `a` adds a task due that day. `Enter` shows the task full-screen.
 
 ### Weekly review
 
@@ -989,7 +1065,7 @@ ttask gc           # purge tasks deleted >30 days ago, history >180 days old, un
 
 ### Cloud-synced folders
 
-Keeping the live database in Dropbox/OneDrive/iCloud can produce conflicted copies if two machines write at once. Prefer keeping it local and pointing `backups.dir` (or `ttask db backup`) at the synced folder.
+Keeping the live database in Dropbox/OneDrive/iCloud can produce conflicted copies if two machines write at once. Prefer keeping it local and pointing `backups.dir` (or `ttask db backup`) at the synced folder. To add tasks from a phone, put a [capture file](#capture-file) in the synced folder instead of the database.
 
 ---
 
@@ -1114,6 +1190,9 @@ on_modify = "~/bin/ttask-hook"
 on_complete = "~/bin/ttask-hook"
 on_delete = "~/bin/ttask-hook"
 timeout_seconds = 10
+
+[capture]                            # see "Capture file" in §5
+file = "~/Dropbox/ttask-inbox.txt"
 ```
 
 ### Rebinding keys
@@ -1122,7 +1201,7 @@ Under `[keys]`, write `action = "key"`. The key replaces that action's default k
 
 **Keys:** a character (`x`, `J`, `/`), or `enter`, `esc`, `tab`, `shift-tab`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `backspace`, `f1`–`f12`, with optional `ctrl-` / `alt-` prefixes (`ctrl-f`, `alt-up`).
 
-**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `save_filter` `wait` `context` `open_link` `open_database` `block` `parent` `history` `copy_title` `copy_id` `sort` `reload` `lock` `annotate` `reports` `review` `next` `previous` `later` `earlier` `focus` `save_template` `help` `quit` `back`.
+**Actions:** `up` `down` `top` `bottom` `page_up` `page_down` `focus_next` `focus_prev` `focus_left` `focus_right` `open` `quick_add` `add_subtask` `edit` `edit_notes` `modify` `done` `cancel` `priority_1` `priority_2` `priority_3` `priority_4` `due` `move` `tags` `filter` `search` `palette` `undo` `redo` `mark` `reorder_up` `reorder_down` `delete` `skip` `checklist_add` `toggle_item` `timer` `time_log` `duplicate` `snooze` `save_filter` `wait` `context` `open_link` `open_database` `block` `parent` `history` `copy_title` `copy_id` `sort` `reload` `lock` `annotate` `reports` `review` `next` `previous` `later` `earlier` `focus` `save_template` `help` `quit` `back`.
 
 ### Environment variables
 

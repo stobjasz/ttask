@@ -407,6 +407,8 @@ There is no always-on daemon in v1. Reminders fire from two places:
 
 For encrypted databases the scheduled job cannot prompt, so it needs the keychain option enabled; `--install` refuses otherwise and explains why.
 
+Snoozing (`ttask remind snooze`, `z` in the TUI) adds a reminder at a time from now or a given time; without task ids it acts on reminders fired in the last 30 minutes.
+
 ### Search and views
 
 - Built-in views are saved filters shipped with the app (Today = `status:open and (due:<=today or sched:<=today)`), so users can copy and tweak them.
@@ -587,6 +589,12 @@ Added 2026-10-15 from a review of Taskwarrior, dstask, todoman/CalDAV, Super Pro
 | M5 | Hooks: user scripts on add/modify/complete with JSON on stdin (opt-in; they see decrypted data) | Done (plus `on_delete`) |
 | M5 | Templates (projects with subtasks and checklists), annotations, TUI agenda (week grid), mouse support, rendered Markdown notes | Done |
 | M5 | In-app task editor (every field in one form; `$EDITOR` still available) | Done |
+| **M5.5 Gaps** | Bulk edit by filter (`edit --filter`, one undo step) | Done |
+| M5.5 | Fixing the time log: `timer log/ls/edit/rm`, TUI time-log popup; entries are part of task snapshots and undo applies only the entries that differ, so unjournaled timer starts/stops survive | Done |
+| M5.5 | Planned time: estimate totals in `ls`, the TUI header and agenda days; estimates vs tracked in reports | Done |
+| M5.5 | Duplicate (`dup`, TUI `p`) with checklist, subtasks and reminders moved with the due date | Done |
+| M5.5 | Capture file: a plain-text inbox in a synced folder, read by the TUI, `ttask capture` and `remind --run` (phone capture without sync) | Done |
+| M5.5 | Snooze reminders (`remind snooze`, TUI `z`) | Done |
 | **M6 Sync** | Multi-device sync. Preferred: an encrypted changeset log in a synced folder with per-field last-writer-wins on `uid`; alternatives: git-based (dstask style) or an opt-in one-way CalDAV/VTODO bridge for phones | Design needed |
 | M6 | Two-way issue-tracker sync (GitHub/GitLab/Jira) as an optional, separate command | Maybe |
 
