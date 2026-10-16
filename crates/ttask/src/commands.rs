@@ -367,6 +367,7 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
         open_db: Some(open_db),
         open_link: Some(Box::new(ttask_app::launch::open_link)),
         focus: ctx.config.focus,
+        mouse: ui.mouse.unwrap_or(true),
     };
     ttask_tui::run(app, settings)
 }

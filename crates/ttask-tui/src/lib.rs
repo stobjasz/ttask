@@ -7,6 +7,7 @@ mod focus;
 mod input;
 mod keymap;
 mod markdown;
+mod mouse;
 mod palette;
 mod review;
 mod state;
@@ -17,7 +18,9 @@ mod ui;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+};
 use ttask_app::App;
 
 pub use focus::FocusSettings;
@@ -28,30 +31,53 @@ pub use theme::{DetailPane, ThemeName};
 /// Runs the TUI until the user quits. The terminal is restored on exit and
 /// on panic.
 pub fn run(app: App, settings: Settings) -> anyhow::Result<()> {
+    let mouse = settings.mouse;
     let mut tui = Tui::new(app, settings)?;
-    let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut tui);
-    ratatui::restore();
+    let mut terminal = init(mouse);
+    let result = event_loop(&mut terminal, &mut tui, mouse);
+    restore(mouse);
     result
 }
 
-fn event_loop(terminal: &mut DefaultTerminal, tui: &mut Tui) -> anyhow::Result<()> {
+/// Enters the TUI screen, capturing the mouse if asked; a panic still
+/// releases it.
+fn init(mouse: bool) -> DefaultTerminal {
+    let terminal = ratatui::init();
+    if mouse {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+            hook(info);
+        }));
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+    }
+    terminal
+}
+
+fn restore(mouse: bool) {
+    if mouse {
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    }
+    ratatui::restore();
+}
+
+fn event_loop(terminal: &mut DefaultTerminal, tui: &mut Tui, mouse: bool) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui::draw(f, tui))?;
         if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
+            match event::read()? {
                 // Windows reports releases too; act on presses (and repeats) only.
-                if key.kind != KeyEventKind::Release {
-                    tui.handle_key(key);
-                }
+                Event::Key(key) if key.kind != KeyEventKind::Release => tui.handle_key(key),
+                Event::Mouse(ev) => tui.handle_mouse(ev),
+                _ => {}
             }
         }
         tui.tick(Instant::now());
         if let Some(id) = tui.take_editor_request() {
             let notes = tui.app.task(id).map(|t| t.notes).unwrap_or_default();
-            ratatui::restore();
+            restore(mouse);
             let result = ttask_app::editor::edit_text(&notes, ".md");
-            *terminal = ratatui::init();
+            *terminal = init(mouse);
             tui.finish_notes(id, result);
         }
         if let Some(text) = tui.take_clipboard_request() {

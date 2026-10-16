@@ -46,6 +46,8 @@ pub struct Settings {
     pub open_db: Option<Opener>,
     pub open_link: Option<LinkOpener>,
     pub focus: FocusSettings,
+    /// Capture the mouse (clicks and the wheel).
+    pub mouse: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +65,7 @@ impl Default for Settings {
             open_db: None,
             open_link: None,
             focus: FocusSettings::default(),
+            mouse: true,
         }
     }
 }
@@ -218,6 +221,8 @@ pub struct Tui {
     pub context: Option<String>,
     /// The weekly review in progress.
     pub review: Option<Review>,
+    /// Pane areas from the last frame, for mouse clicks.
+    pub hit: crate::mouse::Hitboxes,
     /// The week grid, while the Agenda view is open.
     pub agenda: Option<Agenda>,
     /// `Ctrl-S` replaces the view's sort until another view opens.
@@ -265,6 +270,7 @@ impl Tui {
             context: None,
             sort_override: None,
             review: None,
+            hit: Default::default(),
             agenda: None,
             editor_request: None,
             clipboard_request: None,
@@ -529,8 +535,13 @@ impl Tui {
 
     // ------------------------------------------------------------- input
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
+    /// Counts as user activity (for the idle lock).
+    pub(crate) fn touch(&mut self) {
         self.last_activity = Instant::now();
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) {
+        self.touch();
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.quit = true;
             return;

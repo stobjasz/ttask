@@ -1028,3 +1028,87 @@ fn templates_are_saved_with_ctrl_t_and_used_from_the_palette() {
     assert_eq!(new.tags, ["work"]);
     assert_eq!(tui.app.detail(new.id).unwrap().checklist[0].text, "numbers");
 }
+
+fn click(tui: &mut Tui, x: u16, y: u16) {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    tui.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+fn wheel(tui: &mut Tui, x: u16, y: u16, down: bool) {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    tui.handle_mouse(MouseEvent {
+        kind: if down {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        },
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+#[test]
+fn mouse_selects_views_and_tasks_and_toggles_checkboxes() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    for i in 1..=8 {
+        add(&mut tui, &format!("Task {i} due:today"));
+    }
+    render_to_string(&mut tui, 120, 30);
+    let sidebar = tui.hit.sidebar.unwrap();
+    let all = tui
+        .sidebar
+        .iter()
+        .position(
+            |e| matches!(e, crate::state::SidebarEntry::View { view, .. } if view.name == "All"),
+        )
+        .unwrap();
+    click(&mut tui, sidebar.x + 2, sidebar.y + all as u16);
+    assert_eq!(tui.current.name, "All");
+
+    render_to_string(&mut tui, 120, 30);
+    let list = tui.hit.list.unwrap();
+    click(&mut tui, list.x + 10, list.y + 2);
+    assert_eq!(tui.focus, Focus::List);
+    assert_eq!(tui.task_idx, 2);
+    let third = tui.selected_task().unwrap().id;
+
+    // The checkbox column toggles done.
+    click(&mut tui, list.x + 2, list.y + 2);
+    assert!(!tui.app.task(third).unwrap().is_open());
+
+    wheel(&mut tui, list.x + 10, list.y + 1, true);
+    assert_eq!(tui.task_idx, 5);
+    wheel(&mut tui, list.x + 10, list.y + 1, false);
+    assert_eq!(tui.task_idx, 2);
+
+    // Popups scroll; prompts ignore the mouse.
+    press(&mut tui, "?");
+    wheel(&mut tui, 50, 10, true);
+    assert!(matches!(tui.mode, Mode::Help { scroll: 3 }));
+    key(&mut tui, KeyCode::Esc);
+    press(&mut tui, "a");
+    click(&mut tui, sidebar.x + 2, sidebar.y + 1);
+    assert!(matches!(tui.mode, Mode::Prompt(_)));
+}
+
+#[test]
+fn mouse_picks_agenda_cells() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Monday one due:2026-10-12");
+    add(&mut tui, "Monday two due:2026-10-12");
+    tui.open_view(ttask_app::View::agenda());
+    render_to_string(&mut tui, 160, 20);
+    let list = tui.hit.list.unwrap();
+    // Second task of Monday (row 0 is the day header).
+    click(&mut tui, list.x + 2, list.y + 2);
+    assert_eq!(tui.agenda.as_ref().unwrap().day, 0);
+    assert_eq!(tui.selected_task().unwrap().title, "Monday two");
+}

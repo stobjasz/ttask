@@ -15,6 +15,9 @@ use ttask_core::{Task, TaskId};
 
 use crate::App;
 
+/// Receives hook problems (a failing or slow command).
+pub type HookReporter = Box<dyn Fn(&str)>;
+
 /// `[hooks]` in the config: a command per event, split like `$EDITOR`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -119,7 +122,7 @@ impl App {
 
     /// Enables hooks. Problems go to `report`, or, without one, are kept
     /// for [`App::take_hook_warnings`].
-    pub fn set_hooks(&mut self, hooks: HookConfig, report: Option<Box<dyn Fn(&str)>>) {
+    pub fn set_hooks(&mut self, hooks: HookConfig, report: Option<HookReporter>) {
         self.hooks = (!hooks.is_empty()).then_some(hooks);
         self.hook_reporter = report;
     }

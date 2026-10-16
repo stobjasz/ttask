@@ -70,6 +70,8 @@ pub struct UiConfig {
     pub theme: ttask_tui::ThemeName,
     pub keymap: ttask_tui::KeymapName,
     pub show_detail_pane: ttask_tui::DetailPane,
+    /// Clicks and the wheel in the TUI (default on).
+    pub mouse: Option<bool>,
 }
 
 /// `TTASK_CONFIG`, else `<config dir>/ttask/config.toml`.

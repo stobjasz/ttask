@@ -29,7 +29,7 @@ use ttask_store::{
 
 pub use backups::{BackupPolicy, RotationReport};
 pub use detail::TaskDetail;
-pub use hooks::{HookConfig, HookPayload};
+pub use hooks::{HookConfig, HookPayload, HookReporter};
 pub use reports::{ProjectTime, Report, WeekCount};
 pub use templates::{Template, TemplateKind, TemplateTask, UseTemplate};
 pub use ttask_store::{Reminder, TimeEntry};
@@ -80,7 +80,7 @@ pub struct App {
     clock: Box<dyn Clock>,
     urgency: UrgencyWeights,
     hooks: Option<HookConfig>,
-    hook_reporter: Option<Box<dyn Fn(&str)>>,
+    hook_reporter: Option<HookReporter>,
     hook_warnings: Vec<String>,
 }
 

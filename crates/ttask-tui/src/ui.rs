@@ -44,6 +44,7 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
     .areas(area);
     draw_header(f, tui, header);
     if tui.detail_full {
+        tui.hit = Default::default();
         draw_detail(f, tui, body, true);
     } else {
         let show_detail = tui.detail_visible() && body.width >= SIDEBAR_WIDTH + 60;
@@ -58,6 +59,12 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
             vec![Constraint::Length(sidebar_width), Constraint::Min(20)]
         };
         let panes = Layout::horizontal(constraints).split(body);
+        let inner = |r: Rect| Block::new().borders(Borders::ALL).inner(r);
+        tui.hit = crate::mouse::Hitboxes {
+            sidebar: (sidebar_width > 0).then(|| inner(panes[0])),
+            list: Some(inner(panes[1])),
+            detail: show_detail.then(|| inner(panes[2])),
+        };
         if sidebar_width > 0 {
             draw_sidebar(f, tui, panes[0]);
         }
