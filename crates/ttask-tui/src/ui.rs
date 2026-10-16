@@ -106,6 +106,17 @@ fn draw_header(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
     if !tui.filter.is_empty() {
         left.push(Span::styled(format!("  / {}", tui.filter), tui.theme.today));
     }
+    if let Some(review) = &tui.review {
+        left.push(Span::styled(
+            format!(
+                "  Review {}/{}: {}",
+                review.step + 1,
+                crate::review::STEPS.len(),
+                review.current().advice()
+            ),
+            tui.theme.today,
+        ));
+    }
     if tui.sort_override.is_some() {
         left.push(Span::styled(
             format!("  by {}", crate::state::sort_name(tui.sort())),
@@ -217,6 +228,30 @@ fn draw_list(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
     f.render_widget(block, area);
     let height = inner.height as usize;
     tui.page = height.saturating_sub(1).max(1);
+    if let Some(review) = &tui.review {
+        match review.current() {
+            crate::review::Step::Projects => {
+                draw_review_projects(f, tui, inner, focused);
+                return;
+            }
+            crate::review::Step::Done => {
+                let lines = vec![
+                    Line::styled("Review complete.", tui.theme.ok),
+                    Line::raw(""),
+                    Line::styled(
+                        format!(
+                            "Press Esc to finish, or {} to go back a step.",
+                            tui.keymap.first_key(Action::ReviewPrev)
+                        ),
+                        tui.theme.dim,
+                    ),
+                ];
+                f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+                return;
+            }
+            _ => {}
+        }
+    }
     if tui.tasks.is_empty() {
         let hint = if tui.filter.is_empty() {
             format!(
@@ -256,6 +291,50 @@ fn draw_list(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
                 i == tui.task_idx && focused,
                 i == tui.task_idx,
             )
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_review_projects(f: &mut Frame<'_>, tui: &Tui, inner: Rect, focused: bool) {
+    let Some(review) = &tui.review else {
+        return;
+    };
+    if review.projects.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "Every project has a next action.",
+                tui.theme.ok,
+            ))
+            .alignment(Alignment::Center),
+            inner,
+        );
+        return;
+    }
+    let width = inner.width as usize;
+    let lines: Vec<Line> = review
+        .projects
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let note = if p.open_tasks == 0 {
+                "no open tasks".to_owned()
+            } else {
+                format!("{} waiting or blocked", p.open_tasks)
+            };
+            let name = format!(" #{}", p.path);
+            let line = Line::from(vec![
+                Span::styled(
+                    pad(&name, width.saturating_sub(note.len() + 1)),
+                    tui.theme.project,
+                ),
+                Span::styled(note, tui.theme.dim),
+            ]);
+            if i == review.project_idx && focused {
+                line.patch_style(tui.theme.selected)
+            } else {
+                line
+            }
         })
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
@@ -637,6 +716,26 @@ fn draw_footer(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
                 );
                 return;
             }
+            if tui.review.is_some() {
+                let mut spans = vec![Span::raw(" ")];
+                for (i, (action, name)) in [
+                    (Action::ReviewNext, "next step"),
+                    (Action::ReviewPrev, "previous step"),
+                    (Action::Back, "end review"),
+                    (Action::Help, "help"),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    if i > 0 {
+                        spans.push(Span::styled(" · ", t.dim));
+                    }
+                    spans.push(Span::styled(tui.keymap.first_key(*action), t.accent));
+                    spans.push(Span::styled(format!(" {name}"), t.dim));
+                }
+                f.render_widget(Paragraph::new(Line::from(spans)), area);
+                return;
+            }
             let hints = [
                 (Action::Add, "add"),
                 (Action::Edit, "edit"),
@@ -784,7 +883,7 @@ fn draw_help(f: &mut Frame<'_>, tui: &Tui, area: Rect, scroll: u16) {
         Line::raw(""),
         Line::from(Span::styled("Filter", tui.theme.accent)),
         Line::raw("  project:work and (due:<=today or !>=2) and not +someday"),
-        Line::raw("  fields: project tag status priority due sched created done text"),
+        Line::raw("  fields: project tag status priority due sched created modified done text"),
         Line::raw("          has:notes is:recurring is:blocked is:subtask is:overdue"),
     ]);
     f.render_widget(

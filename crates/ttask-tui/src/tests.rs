@@ -802,3 +802,70 @@ fn editor_reports_bad_fields_and_guards_unsaved_changes() {
     key(&mut tui, KeyCode::Esc);
     assert!(matches!(tui.mode, Mode::Normal));
 }
+
+#[test]
+fn weekly_review_walks_through_the_steps() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("t.db");
+    {
+        let store = Store::create(&path, None).unwrap();
+        let mut app = App::new(store, FixedClock::on(date(2026, 9, 1)));
+        app.add("Old idea #ideas", None, None).unwrap();
+        app.add("Parked #garden wait:someday", None, None).unwrap();
+    }
+    let store = Store::open(&path, &mut secrecy::SecretString::from(String::new())).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let mut tui = Tui::new(app, Settings::default()).unwrap();
+    add(&mut tui, "Loose end");
+    add(&mut tui, "Late #work due:2026-10-10");
+
+    press(&mut tui, "W");
+    assert_eq!(tui.current.name, "Review: Inbox");
+    assert_eq!(titles(&tui), ["Loose end"]);
+    tui.status = None;
+    let screen = render_to_string(&mut tui, 140, 20);
+    assert!(screen.contains("Review 1/6"), "{screen}");
+    assert!(screen.contains("] next step"), "{screen}");
+
+    press(&mut tui, "]");
+    assert_eq!(titles(&tui), ["Late"]);
+    press(&mut tui, "]");
+    assert_eq!(tui.current.name, "Review: Stale");
+    assert_eq!(titles(&tui), ["Old idea"]);
+    press(&mut tui, "]");
+    assert_eq!(titles(&tui), ["Parked"]);
+    press(&mut tui, "]");
+    let names: Vec<String> = tui
+        .review
+        .as_ref()
+        .unwrap()
+        .projects
+        .iter()
+        .map(|p| p.path.clone())
+        .collect();
+    assert_eq!(names, ["garden"], "ideas and work have open tasks");
+    let screen = render_to_string(&mut tui, 140, 20);
+    assert!(screen.contains("#garden"), "{screen}");
+
+    // `a` adds the next action to the selected project; the list updates.
+    press(&mut tui, "a");
+    press(&mut tui, "Buy seeds");
+    key(&mut tui, KeyCode::Enter);
+    key(&mut tui, KeyCode::Esc);
+    assert!(tui.review.as_ref().unwrap().projects.is_empty());
+    assert_eq!(
+        tui.app.list("#garden", "", ttask_store::TaskSort::Smart).unwrap()[0].title,
+        "Buy seeds"
+    );
+
+    press(&mut tui, "]");
+    assert_eq!(tui.app.last_review().unwrap(), Some(date(2026, 10, 15)));
+    let screen = render_to_string(&mut tui, 140, 20);
+    assert!(screen.contains("Review complete"), "{screen}");
+    key(&mut tui, KeyCode::Esc);
+    assert!(tui.review.is_none());
+    assert_eq!(tui.current.name, "Today");
+
+    press(&mut tui, "]");
+    assert!(tui.status.as_ref().unwrap().error, "no review running");
+}

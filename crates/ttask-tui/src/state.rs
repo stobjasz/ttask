@@ -17,6 +17,7 @@ use crate::editor::{Editor, NOTES};
 use crate::input::LineInput;
 use crate::keymap::{Action, Keymap, KeymapName};
 use crate::palette::{Item, Palette, Target};
+use crate::review::{Review, STEPS, Step};
 use crate::theme::{DetailPane, Theme, ThemeName};
 
 /// Called with a notification title and body (desktop notifications).
@@ -201,6 +202,8 @@ pub struct Tui {
     pub timer: Option<(ttask_app::TimeEntry, Task)>,
     /// Name of the active context, shown in the header.
     pub context: Option<String>,
+    /// The weekly review in progress.
+    pub review: Option<Review>,
     /// `Ctrl-S` replaces the view's sort until another view opens.
     pub sort_override: Option<TaskSort>,
     editor_request: Option<TaskId>,
@@ -245,6 +248,7 @@ impl Tui {
             timer: None,
             context: None,
             sort_override: None,
+            review: None,
             editor_request: None,
             clipboard_request: None,
             data_version: 0,
@@ -294,6 +298,16 @@ impl Tui {
         self.timer = self.app.running_timer()?;
         self.context = self.app.active_context()?.map(|(name, _)| name);
         self.data_version = self.app.store().data_version()?;
+        if let Some(review) = self
+            .review
+            .as_mut()
+            .filter(|r| r.current() == Step::Projects)
+        {
+            review.projects = self.app.projects_without_next_action()?;
+            review.project_idx = review
+                .project_idx
+                .min(review.projects.len().saturating_sub(1));
+        }
         Ok(())
     }
 
@@ -1061,11 +1075,39 @@ impl Tui {
                         .sidebar_view(self.sidebar_idx)
                         .unwrap_or_else(View::today);
                     self.open_view(view);
+                } else if self.review.is_some() {
+                    self.end_review();
                 } else if self.focus == Focus::Detail {
                     self.focus = Focus::List;
                 }
             }
-            Action::Add => self.open_prompt(PromptKind::Add { parent: None }, ""),
+            Action::Add => {
+                // In the Projects step of the review, add to the selected project.
+                let initial = self
+                    .review
+                    .as_ref()
+                    .filter(|r| r.current() == Step::Projects)
+                    .and_then(|r| r.selected_project())
+                    .map(|p| format!("#{} ", p.path))
+                    .unwrap_or_default();
+                self.open_prompt(PromptKind::Add { parent: None }, &initial);
+            }
+            Action::Review => self.start_review(),
+            Action::ReviewNext | Action::ReviewPrev => match &self.review {
+                Some(review) => {
+                    let step =
+                        review.step as isize + if action == Action::ReviewNext { 1 } else { -1 };
+                    if (0..STEPS.len() as isize).contains(&step) {
+                        self.review_step(step as usize);
+                    } else if step >= STEPS.len() as isize {
+                        self.end_review();
+                    }
+                }
+                None => self.error(format!(
+                    "Start the weekly review with {}",
+                    self.keymap.first_key(Action::Review)
+                )),
+            },
             Action::AddSubtask => {
                 if let Some(task) = self.selected_task() {
                     let parent = task.parent_id.unwrap_or(task.id);
@@ -1405,6 +1447,59 @@ impl Tui {
         }
     }
 
+    fn start_review(&mut self) {
+        let last = self.app.last_review().ok().flatten();
+        self.review = Some(Review {
+            step: 0,
+            projects: Vec::new(),
+            project_idx: 0,
+            last,
+        });
+        self.focus = Focus::List;
+        self.review_step(0);
+        if let Some(last) = last {
+            let days = ttask_core::date::days_between(last, self.app.today());
+            self.ok(format!(
+                "Weekly review; the last one was {}",
+                match days {
+                    0 => "today".to_owned(),
+                    1 => "yesterday".to_owned(),
+                    n => format!("{n} days ago"),
+                }
+            ));
+        }
+    }
+
+    fn review_step(&mut self, step: usize) {
+        let Some(review) = self.review.as_mut() else {
+            return;
+        };
+        review.step = step;
+        review.project_idx = 0;
+        let current = review.current();
+        if current == Step::Done {
+            if let Err(e) = self.app.mark_reviewed() {
+                self.error(e.to_string());
+            }
+        }
+        let view = current.view().unwrap_or_else(|| View {
+            name: format!("Review: {}", current.name()),
+            // Matches nothing: these steps draw their own list.
+            query: "id:0".into(),
+            sort: TaskSort::Smart,
+            kind: ViewKind::Builtin,
+        });
+        self.open_view(view);
+    }
+
+    fn end_review(&mut self) {
+        self.review = None;
+        let view = self
+            .sidebar_view(self.sidebar_idx)
+            .unwrap_or_else(View::today);
+        self.open_view(view);
+    }
+
     fn open_link(&mut self, link: &str) {
         let result = match &self.settings.open_link {
             Some(open) => open(link).map_err(|e| e.to_string()),
@@ -1524,6 +1619,17 @@ impl Tui {
                     if let Some(view) = self.sidebar_view(i) {
                         self.open_view(view);
                     }
+                }
+            }
+            Focus::List
+                if self
+                    .review
+                    .as_ref()
+                    .is_some_and(|r| r.current() == Step::Projects) =>
+            {
+                if let Some(review) = self.review.as_mut() {
+                    review.project_idx =
+                        clamp_add(review.project_idx, delta, review.projects.len());
                 }
             }
             Focus::List => {

@@ -59,6 +59,8 @@ pub enum Pred {
     Sched(Cmp, Date),
     SchedNone,
     Created(Cmp, Date),
+    /// Last change (`modified:<-30d` finds stale tasks).
+    Modified(Cmp, Date),
     Done(Cmp, Date),
     Text(String),
     HasNotes,
@@ -367,6 +369,7 @@ impl Parser {
                 _ => self.date_cmp(value).map(|(c, d)| Pred::Wait(c, d)),
             },
             "created" => self.date_cmp(value).map(|(c, d)| Pred::Created(c, d)),
+            "modified" | "updated" => self.date_cmp(value).map(|(c, d)| Pred::Modified(c, d)),
             "done" | "completed" => self.date_cmp(value).map(|(c, d)| Pred::Done(c, d)),
             "text" => Ok(Pred::Text(value.to_owned())),
             "has" => match lower.as_str() {

@@ -79,6 +79,8 @@ pub struct App {
 
 /// The `meta` key holding the active context's saved-filter name.
 const CONTEXT_KEY: &str = "context";
+/// The `meta` key holding the date of the last finished weekly review.
+const REVIEW_KEY: &str = "last_review";
 
 impl App {
     pub fn new(store: Store, clock: impl Clock + 'static) -> App {
@@ -312,6 +314,35 @@ impl App {
             text.push_str(&item.text);
         }
         Ok(ttask_core::links::find_links(&text))
+    }
+
+    /// Active projects with no open task you could start now (not
+    /// waiting, someday or blocked), for the weekly review.
+    pub fn projects_without_next_action(&self) -> Result<Vec<Project>> {
+        let mut out = Vec::new();
+        for project in self.projects(false)? {
+            let query = format!("project:\"{}\" and not is:blocked", project.path);
+            if self.count(&query, "", false)? == 0 {
+                out.push(project);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The day the weekly review was last finished.
+    pub fn last_review(&self) -> Result<Option<Date>> {
+        Ok(self
+            .store
+            .db()
+            .meta(REVIEW_KEY)?
+            .and_then(|d| d.parse().ok()))
+    }
+
+    pub fn mark_reviewed(&mut self) -> Result<()> {
+        let today = self.today().to_string();
+        Ok(self
+            .store
+            .write(|db| db.set_meta(REVIEW_KEY, Some(&today)))?)
     }
 
     /// How many tasks [`App::list_with`] would return.

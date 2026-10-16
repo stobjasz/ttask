@@ -6,6 +6,7 @@ mod input;
 mod keymap;
 mod markdown;
 mod palette;
+mod review;
 mod state;
 mod textarea;
 mod theme;

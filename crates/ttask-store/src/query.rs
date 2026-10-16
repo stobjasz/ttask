@@ -239,6 +239,7 @@ fn compile_pred(pred: &Pred, ctx: &QueryCtx, params: &mut Vec<Value>) -> String 
         ),
         Pred::SchedNone => "t.scheduled_date IS NULL".into(),
         Pred::Created(cmp, date) => instant_cmp("t.created_at", *cmp, *date, ctx, params),
+        Pred::Modified(cmp, date) => instant_cmp("t.updated_at", *cmp, *date, ctx, params),
         Pred::Done(cmp, date) => format!(
             "t.status <> 'open' AND {}",
             instant_cmp("t.completed_at", *cmp, *date, ctx, params)

@@ -66,6 +66,9 @@ pub enum Action {
     Lock,
     Annotate,
     Reports,
+    Review,
+    ReviewNext,
+    ReviewPrev,
     Help,
     Quit,
     Back,
@@ -135,6 +138,9 @@ impl Action {
         (Action::Lock, "lock", "Lock now"),
         (Action::Annotate, "annotate", "Add a timestamped note"),
         (Action::Reports, "reports", "Reports"),
+        (Action::Review, "review", "Weekly review"),
+        (Action::ReviewNext, "review_next", "Review: next step"),
+        (Action::ReviewPrev, "review_prev", "Review: previous step"),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
         (Action::Back, "back", "Back / clear filter"),
@@ -328,6 +334,9 @@ impl Keymap {
         bind(&["L"], Action::Lock);
         bind(&["n"], Action::Annotate);
         bind(&["R"], Action::Reports);
+        bind(&["W"], Action::Review);
+        bind(&["]"], Action::ReviewNext);
+        bind(&["["], Action::ReviewPrev);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);
