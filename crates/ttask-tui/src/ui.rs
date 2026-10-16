@@ -72,6 +72,7 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
         Mode::Palette(_) => draw_palette(f, tui, area),
         Mode::Confirm { message, .. } => draw_confirm(f, tui, area, message),
         Mode::Editor(_) => draw_editor(f, tui, area),
+        Mode::Report { lines, scroll } => draw_report(f, tui, area, lines, *scroll),
         _ => {}
     }
 }
@@ -525,9 +526,11 @@ fn draw_detail(f: &mut Frame<'_>, tui: &Tui, area: Rect, full: bool) {
     }
     if !task.notes.is_empty() {
         lines.push(Line::raw(""));
-        for line in task.notes.lines() {
-            lines.push(Line::raw(line.to_owned()));
-        }
+        lines.extend(crate::markdown::render(
+            &task.notes,
+            t,
+            inner.width as usize,
+        ));
     }
     let item_style = |i: usize| {
         if focused && i == tui.detail_idx {
@@ -790,6 +793,23 @@ fn draw_help(f: &mut Frame<'_>, tui: &Tui, area: Rect, scroll: u16) {
             .scroll((scroll, 0)),
         rect,
     );
+}
+
+fn draw_report(f: &mut Frame<'_>, tui: &Tui, area: Rect, lines: &[String], scroll: u16) {
+    let rect = centered(area, 72, area.height.saturating_sub(4));
+    f.render_widget(Clear, rect);
+    let block = pane_block(tui, "Reports, last 8 weeks (Esc to close)", true);
+    let lines: Vec<Line> = lines
+        .iter()
+        .map(|l| {
+            if l.is_empty() || l.starts_with(' ') {
+                Line::styled(l.clone(), tui.theme.base)
+            } else {
+                Line::styled(l.clone(), tui.theme.accent.add_modifier(Modifier::BOLD))
+            }
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
 }
 
 fn draw_history(

@@ -64,6 +64,8 @@ pub enum Action {
     Sort,
     Reload,
     Lock,
+    Annotate,
+    Reports,
     Help,
     Quit,
     Back,
@@ -131,6 +133,8 @@ impl Action {
         (Action::Sort, "sort", "Cycle sort order"),
         (Action::Reload, "reload", "Reload"),
         (Action::Lock, "lock", "Lock now"),
+        (Action::Annotate, "annotate", "Add a timestamped note"),
+        (Action::Reports, "reports", "Reports"),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
         (Action::Back, "back", "Back / clear filter"),
@@ -322,6 +326,8 @@ impl Keymap {
         bind(&["ctrl-s"], Action::Sort);
         bind(&["ctrl-l", "f5"], Action::Reload);
         bind(&["L"], Action::Lock);
+        bind(&["n"], Action::Annotate);
+        bind(&["R"], Action::Reports);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);

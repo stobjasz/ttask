@@ -7,6 +7,7 @@ mod detail;
 pub mod editor;
 pub mod io;
 pub mod launch;
+mod reports;
 mod views;
 
 use jiff::ToSpan;
@@ -26,6 +27,7 @@ use ttask_store::{
 
 pub use backups::{BackupPolicy, RotationReport};
 pub use detail::TaskDetail;
+pub use reports::{ProjectTime, Report, WeekCount};
 pub use ttask_store::{Reminder, TimeEntry};
 pub use views::{View, ViewKind, arrange_tree};
 
@@ -434,6 +436,33 @@ impl App {
     /// Makes `child` a subtask of `parent`, or a top-level task with `None`.
     pub fn set_parent(&mut self, child: TaskId, parent: Option<TaskId>) -> Result<Task> {
         self.update_fields(child, |f| f.parent_id = parent)
+    }
+
+    /// Appends a timestamped line to the notes: `- 2026-10-16 14:02 text`.
+    pub fn annotate(&mut self, id: TaskId, text: &str) -> Result<Task> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(AppError::Invalid("an annotation needs text".into()));
+        }
+        let stamp = jiff::Timestamp::from_millisecond(self.now_ms())
+            .map(|t| {
+                t.to_zoned(self.clock.time_zone())
+                    .strftime("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let line = format!("- {stamp} {text}");
+        self.update_fields(id, |f| {
+            let notes = f.notes.trim_end();
+            f.notes = if notes.is_empty() {
+                line
+            } else {
+                format!(
+                    "{notes}
+{line}"
+                )
+            };
+        })
     }
 
     fn update_fields(&mut self, id: TaskId, change: impl FnOnce(&mut TaskFields)) -> Result<Task> {

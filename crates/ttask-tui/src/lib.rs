@@ -4,6 +4,7 @@
 mod editor;
 mod input;
 mod keymap;
+mod markdown;
 mod palette;
 mod state;
 mod textarea;

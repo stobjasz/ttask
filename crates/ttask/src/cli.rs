@@ -102,6 +102,13 @@ pub enum Command {
     /// Delete tasks and their subtasks (undoable; purged by `gc` after 30 days)
     #[command(visible_alias = "delete")]
     Rm(Targets),
+    /// Add a timestamped line to a task's notes
+    #[command(visible_alias = "note")]
+    Annotate {
+        id: TaskId,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
     /// Move a recurring task to its next occurrence without completing it
     Skip { id: TaskId },
     /// Revert the last action
@@ -133,6 +140,12 @@ pub enum Command {
         /// Print the links instead of opening them
         #[arg(long)]
         print: bool,
+    },
+    /// Completed tasks per week, tracked time per project, overdue trend
+    Report {
+        /// How many weeks back, this one included
+        #[arg(long, default_value_t = 8)]
+        weeks: u32,
     },
     /// Full-text search over titles and notes
     Search {

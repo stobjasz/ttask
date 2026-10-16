@@ -142,10 +142,10 @@ impl Editor {
                 Change::Clear => "Inbox".into(),
                 Change::Set(path) => format!("#{}", path.join("/")),
             }),
-            2 => match split_tags(text).into_iter().find(|t| !is_tag_name(t)) {
-                Some(bad) => Err(format!("`{bad}` is not a tag")),
-                None => return None,
-            },
+            2 => {
+                let bad = split_tags(text).into_iter().find(|t| !is_tag_name(t))?;
+                Err(format!("`{bad}` is not a tag"))
+            }
             3 => parse_priority(text).map(|p| p.name().to_owned()),
             4 if !text.is_empty() => parse_due(text, today).map(|spec| {
                 let mut s = date_hint(spec.date);

@@ -92,6 +92,7 @@ pub enum PromptKind {
     Password(PathBuf),
     Block(TaskId),
     Parent(TaskId),
+    Annotate(TaskId),
 }
 
 impl PromptKind {
@@ -113,6 +114,7 @@ impl PromptKind {
             PromptKind::Password(_) => "Password",
             PromptKind::Block(_) => "Waits on (task ids)",
             PromptKind::Parent(_) => "Subtask of (task id, none)",
+            PromptKind::Annotate(_) => "Note",
         }
     }
 
@@ -146,6 +148,11 @@ pub enum Mode {
         ids: Vec<TaskId>,
     },
     Help {
+        scroll: u16,
+    },
+    /// Reports: plain lines; section titles do not start with a space.
+    Report {
+        lines: Vec<String>,
         scroll: u16,
     },
     /// A task's change history: `(when, what)` rows.
@@ -494,6 +501,10 @@ impl Tui {
             },
             Mode::Help { scroll } => match self.scroll_key(&key, scroll) {
                 Some(scroll) => Mode::Help { scroll },
+                None => Mode::Normal,
+            },
+            Mode::Report { lines, scroll } => match self.scroll_key(&key, scroll) {
+                Some(scroll) => Mode::Report { lines, scroll },
                 None => Mode::Normal,
             },
             Mode::History {
@@ -896,6 +907,11 @@ impl Tui {
                 }
             }
             PromptKind::Block(id) => self.set_blockers(*id, &text),
+            PromptKind::Annotate(id) => self
+                .app
+                .annotate(*id, &text)
+                .map(|_| Some("Note added".into()))
+                .map_err(|e| e.to_string()),
             PromptKind::Parent(id) => {
                 let trimmed = text.trim().trim_start_matches('#');
                 let parent = if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
@@ -1368,6 +1384,20 @@ impl Tui {
                     self.lock();
                 } else {
                     self.error("Only an encrypted database can be locked");
+                }
+            }
+            Action::Reports => match self.app.report(8) {
+                Ok(report) => {
+                    self.mode = Mode::Report {
+                        lines: report.to_lines(24),
+                        scroll: 0,
+                    }
+                }
+                Err(e) => self.error(e.to_string()),
+            },
+            Action::Annotate => {
+                if let Some(id) = self.selected_task().map(|t| t.id) {
+                    self.open_prompt(PromptKind::Annotate(id), "");
                 }
             }
             Action::Help => self.mode = Mode::Help { scroll: 0 },

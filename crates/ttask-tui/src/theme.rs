@@ -53,6 +53,12 @@ pub struct Glyphs {
     pub blocked: &'static str,
     pub lock: &'static str,
     pub timer: &'static str,
+    /// Markdown notes: list bullet, task-list boxes, quote bar, rule.
+    pub bullet: &'static str,
+    pub box_open: &'static str,
+    pub box_done: &'static str,
+    pub quote: &'static str,
+    pub rule: &'static str,
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -64,6 +70,11 @@ const UNICODE: Glyphs = Glyphs {
     blocked: "⧗",
     lock: "[L]",
     timer: "◷",
+    bullet: "•",
+    box_open: "☐",
+    box_done: "☑",
+    quote: "│",
+    rule: "─",
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -75,6 +86,11 @@ const ASCII: Glyphs = Glyphs {
     blocked: "!",
     lock: "[L]",
     timer: "@",
+    bullet: "*",
+    box_open: "[ ]",
+    box_done: "[x]",
+    quote: ">",
+    rule: "-",
 };
 
 impl Theme {

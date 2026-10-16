@@ -674,3 +674,70 @@ fn ics_export_lists_due_tasks_in_context() {
     assert!(ics.contains("DTSTART:20261103T100000Z"));
     assert!(ics.contains("DTEND:20261103T104500Z"));
 }
+
+#[test]
+fn annotations_append_timestamped_lines_and_undo() {
+    let dir = TempDir::new().unwrap();
+    let mut app = app(&dir);
+    let task = app.add("Call bank", None, None).unwrap();
+    app.annotate(task.id, "left a message").unwrap();
+    app.annotate(task.id, " called back ").unwrap();
+    assert_eq!(
+        app.task(task.id).unwrap().notes,
+        "- 2026-10-15 12:00 left a message\n- 2026-10-15 12:00 called back"
+    );
+    app.undo().unwrap();
+    assert_eq!(
+        app.task(task.id).unwrap().notes,
+        "- 2026-10-15 12:00 left a message"
+    );
+    assert!(app.annotate(task.id, "  ").is_err());
+}
+
+#[test]
+fn report_buckets_completions_time_and_overdue_by_week() {
+    let dir = TempDir::new().unwrap();
+    // Week 41 is 5–11 October, week 42 (today, the 15th) 12–18 October.
+    let mut app = app_on(&dir, date(2026, 10, 5));
+    let late = app.add("Late #work due:2026-10-06", None, None).unwrap();
+    let fixed = app.add("Fixed later due:2026-10-08", None, None).unwrap();
+    let early = app.add("Early win", None, None).unwrap();
+    app.complete(&[early.id]).unwrap();
+    drop(app);
+    let mut app = app_on(&dir, date(2026, 10, 7));
+    app.start_timer(late.id).unwrap();
+    drop(app);
+    let mut app = app_on(&dir, date(2026, 10, 8));
+    app.stop_timer().unwrap();
+    drop(app);
+    let mut app = app_on(&dir, date(2026, 10, 13));
+    app.complete(&[fixed.id]).unwrap();
+    drop(app);
+    let mut app = app_on(&dir, TODAY);
+    let today = app.add("Today's", None, None).unwrap();
+    app.complete(&[today.id]).unwrap();
+
+    let report = app.report(2).unwrap();
+    let counts = |rows: &[WeekCount]| -> Vec<(String, u32)> {
+        rows.iter().map(|r| (r.week.clone(), r.count)).collect()
+    };
+    assert_eq!(
+        counts(&report.completed),
+        [("2026-W41".to_owned(), 1), ("2026-W42".to_owned(), 2)]
+    );
+    assert_eq!(
+        counts(&report.overdue),
+        [("2026-W41".to_owned(), 2), ("2026-W42".to_owned(), 1)]
+    );
+    assert_eq!(report.time_since, date(2026, 10, 5));
+    assert_eq!(
+        report.time,
+        [ProjectTime {
+            project: Some("work".into()),
+            minutes: 1440
+        }]
+    );
+    let text = report.to_lines(10).join("\n");
+    assert!(text.contains("  2026-W42  ██████████ 2"), "{text}");
+    assert!(text.contains("  work  ██████████ 24h"), "{text}");
+}

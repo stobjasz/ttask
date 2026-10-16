@@ -205,6 +205,14 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Ok((serde_json::to_value(&t)?, format!("{}: {}", t.id, t.title)))
             });
         }
+        Command::Annotate { id, text } => {
+            let task = ctx.open()?.annotate(id, &text.join(" "))?;
+            if ctx.json {
+                ctx.print_json(&task)?;
+            } else {
+                ctx.say(format!("Annotated task {}: {}", task.id, task.title));
+            }
+        }
         Command::Skip { id } => {
             let mut app = ctx.open()?;
             let t = app.skip(id)?;
@@ -244,6 +252,20 @@ pub fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             no_context,
         } => count(&ctx, &query, all, no_context)?,
         Command::Open { id, n, all, print } => open_links(&ctx, id, n, all, print)?,
+        Command::Report { weeks } => {
+            let report = ctx.open()?.report(weeks)?;
+            if ctx.json {
+                ctx.print_json(&report)?;
+            } else {
+                for line in report.to_lines(30) {
+                    if line.starts_with(' ') || line.is_empty() {
+                        println!("{line}");
+                    } else {
+                        println!("{}", ctx.painter.paint(Tone::Bold, &line));
+                    }
+                }
+            }
+        }
         Command::Search { text, all } => search(&ctx, &text.join(" "), all)?,
         Command::Checklist { task, action } => checklist(&ctx, task, action)?,
         Command::Block { id, on } => {
