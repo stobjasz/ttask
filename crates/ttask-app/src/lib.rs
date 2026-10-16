@@ -944,6 +944,9 @@ fn apply_mods(
     if let Some(title) = &mods.title {
         f.title = title.clone();
     }
+    if let Some(notes) = &mods.notes {
+        f.notes = notes.trim_end().to_owned();
+    }
     match &mods.project {
         Some(Change::Set(path)) => f.project_id = Some(db.ensure_project_path(path, now)?),
         Some(Change::Clear) => f.project_id = None,

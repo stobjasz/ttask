@@ -13,6 +13,7 @@ use ttask_core::recur::{RecurMode, RecurRule};
 use ttask_core::{Status, Task};
 use unicode_width::UnicodeWidthStr;
 
+use crate::editor::{FIELDS, NOTES};
 use crate::keymap::Action;
 use crate::state::{Focus, Mode, PromptKind, SidebarEntry, Tui};
 
@@ -70,6 +71,7 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
         } => draw_history(f, tui, area, title, entries, *scroll),
         Mode::Palette(_) => draw_palette(f, tui, area),
         Mode::Confirm { message, .. } => draw_confirm(f, tui, area, message),
+        Mode::Editor(_) => draw_editor(f, tui, area),
         _ => {}
     }
 }
@@ -876,6 +878,164 @@ fn draw_palette(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), list_area);
+}
+
+/// Rows above the notes: the fields, then the "Notes" label.
+const EDITOR_FIELD_ROWS: u16 = FIELDS.len() as u16 + 1;
+
+fn draw_editor(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
+    let rect = centered(area, 96, area.height.saturating_sub(2).max(16));
+    let block_inner = Block::new().borders(Borders::ALL).inner(rect);
+    // Notes box: what is left after the fields, the help line and its border.
+    let notes_height = block_inner.height.saturating_sub(EDITOR_FIELD_ROWS + 1 + 2);
+    if let Mode::Editor(editor) = &mut tui.mode {
+        editor.notes.follow_cursor(notes_height as usize);
+    }
+    let Mode::Editor(editor) = &tui.mode else {
+        return;
+    };
+    let t = &tui.theme;
+    f.render_widget(Clear, rect);
+    let title = format!("Edit task #{}", editor.task_id);
+    let block = pane_block(tui, &title, true);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let today = tui.app.today();
+    let label_width = 11usize;
+    let rest = (inner.width as usize).saturating_sub(label_width);
+    let value_width = (rest * 3 / 5).max(10);
+    let mut cursor = None;
+    for (i, label) in FIELDS.iter().enumerate() {
+        let y = inner.y + i as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        let focused = editor.focus == i;
+        let input = &editor.inputs[i];
+        let (shown, cursor_x) = window(&input.display(), input.cursor_column(), value_width);
+        let mut spans = vec![
+            Span::styled(
+                format!("{label:<label_width$}"),
+                if focused {
+                    t.accent.add_modifier(Modifier::BOLD)
+                } else {
+                    t.dim
+                },
+            ),
+            Span::styled(pad(&shown, value_width), t.base),
+        ];
+        if let Some(hint) = editor.hint(i, today) {
+            let (text, style) = match hint {
+                Ok(text) => (text, t.dim),
+                Err(text) => (text, t.error),
+            };
+            spans.push(Span::styled(format!("  {text}"), style));
+        }
+        let line = Line::from(spans);
+        let line = if focused {
+            line.patch_style(Style::new().add_modifier(Modifier::UNDERLINED))
+        } else {
+            line
+        };
+        f.render_widget(Paragraph::new(line), Rect::new(inner.x, y, inner.width, 1));
+        if focused {
+            cursor = Some((inner.x + label_width as u16 + cursor_x, y));
+        }
+    }
+    let notes_focused = editor.focus == NOTES;
+    let label_y = inner.y + FIELDS.len() as u16;
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Notes (Markdown)",
+            if notes_focused {
+                t.accent.add_modifier(Modifier::BOLD)
+            } else {
+                t.dim
+            },
+        )),
+        Rect::new(inner.x, label_y, inner.width, 1),
+    );
+    let notes_rect = Rect::new(inner.x, label_y + 1, inner.width, notes_height + 2);
+    let notes_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if notes_focused {
+            t.border_focus
+        } else {
+            t.border
+        });
+    let notes_inner = notes_block.inner(notes_rect);
+    f.render_widget(notes_block, notes_rect);
+    let width = notes_inner.width as usize;
+    let cursor_col = editor.notes.cursor_column();
+    let shift = (cursor_col + 1).saturating_sub(width);
+    let lines: Vec<Line> = editor
+        .notes
+        .lines()
+        .skip(editor.notes.scroll)
+        .take(notes_inner.height as usize)
+        .map(|l| Line::raw(skip_columns(&l, shift)))
+        .collect();
+    f.render_widget(Paragraph::new(lines), notes_inner);
+    if notes_focused {
+        let row = editor.notes.row().saturating_sub(editor.notes.scroll) as u16;
+        cursor = Some((
+            notes_inner.x + (cursor_col - shift) as u16,
+            notes_inner.y + row,
+        ));
+    }
+    let help_y = notes_rect.bottom();
+    if help_y < inner.bottom() {
+        let help = match &editor.error {
+            Some(err) => Span::styled(err.clone(), t.error),
+            None => Span::styled(
+                "Tab/↑↓ fields · Enter or Ctrl-S saves · Esc cancels · E (in the list) edits notes in $EDITOR",
+                t.dim,
+            ),
+        };
+        f.render_widget(
+            Paragraph::new(help),
+            Rect::new(inner.x, help_y, inner.width, 1),
+        );
+    }
+    if let Some((x, y)) = cursor {
+        f.set_cursor_position((x.min(inner.right().saturating_sub(1)), y));
+    }
+}
+
+/// The part of `text` to show in `width` columns so that the cursor (at
+/// display column `cursor`) is visible; returns it and the cursor's column.
+fn window(text: &str, cursor: u16, width: usize) -> (String, u16) {
+    let cursor = cursor as usize;
+    if text.width() < width {
+        return (text.to_owned(), cursor as u16);
+    }
+    let shift = (cursor + 1).saturating_sub(width);
+    let shown = skip_columns(text, shift);
+    (truncate_plain(&shown, width), (cursor - shift) as u16)
+}
+
+/// Drops the first `columns` display columns of `s`.
+fn skip_columns(s: &str, columns: usize) -> String {
+    let mut used = 0;
+    s.chars()
+        .skip_while(|c| {
+            let skip = used < columns;
+            used += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            skip
+        })
+        .collect()
+}
+
+/// Cuts `s` to `width` columns without an ellipsis.
+fn truncate_plain(s: &str, width: usize) -> String {
+    let mut used = 0;
+    s.chars()
+        .take_while(|c| {
+            used += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            used <= width
+        })
+        .collect()
 }
 
 fn draw_confirm(f: &mut Frame<'_>, tui: &Tui, area: Rect, message: &str) {

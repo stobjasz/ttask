@@ -709,3 +709,96 @@ fn dependencies_parent_history_copy_sort_and_lock_keys() {
     assert!(tui.status.as_ref().unwrap().error);
     assert!(matches!(tui.mode, Mode::Normal));
 }
+
+/// Types text into whatever has focus, with `\n` as Enter.
+fn type_text(tui: &mut Tui, text: &str) {
+    for c in text.chars() {
+        let code = if c == '\n' {
+            KeyCode::Enter
+        } else {
+            KeyCode::Char(c)
+        };
+        tui.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+}
+
+#[test]
+fn editor_changes_several_fields_in_one_undo_step() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Paint shed #home +diy due:today");
+    press(&mut tui, "e");
+    assert!(matches!(tui.mode, Mode::Editor(_)));
+    let screen = render_to_string(&mut tui, 120, 30);
+    assert!(screen.contains("Edit task #1"), "{screen}");
+    assert!(screen.contains("+diy"), "{screen}");
+
+    type_text(&mut tui, " white"); // title
+    key(&mut tui, KeyCode::Down); // project
+    ctrl(&mut tui, 'u');
+    type_text(&mut tui, "garden");
+    key(&mut tui, KeyCode::Tab); // tags
+    type_text(&mut tui, " +weekend");
+    key(&mut tui, KeyCode::Down); // priority
+    ctrl(&mut tui, 'u');
+    type_text(&mut tui, "high");
+    key(&mut tui, KeyCode::Down); // due
+    ctrl(&mut tui, 'u');
+    type_text(&mut tui, "tom 9am");
+    let screen = render_to_string(&mut tui, 120, 30);
+    assert!(screen.contains("Fri 16 Oct · tomorrow · 09:00"), "{screen}");
+    key(&mut tui, KeyCode::BackTab);
+    for _ in 0..6 {
+        key(&mut tui, KeyCode::Tab);
+    }
+    // Notes: Enter makes new lines here instead of saving.
+    type_text(&mut tui, "Two coats\n- primer first");
+    assert!(matches!(tui.mode, Mode::Editor(_)));
+    ctrl(&mut tui, 's');
+    assert!(matches!(tui.mode, Mode::Normal), "saved");
+
+    let task = tui.app.task(1).unwrap();
+    assert_eq!(task.title, "Paint shed white");
+    assert_eq!(task.project.as_deref(), Some("garden"));
+    assert_eq!(task.tags, ["diy", "weekend"]);
+    assert_eq!(task.priority.name(), "high");
+    assert_eq!(task.due_date, Some(date(2026, 10, 16)));
+    assert_eq!(task.notes, "Two coats\n- primer first");
+
+    press(&mut tui, "u");
+    let task = tui.app.task(1).unwrap();
+    assert_eq!(task.title, "Paint shed");
+    assert_eq!(task.notes, "");
+}
+
+#[test]
+fn editor_reports_bad_fields_and_guards_unsaved_changes() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Estimate me due:today");
+    press(&mut tui, "e");
+    for _ in 0..7 {
+        key(&mut tui, KeyCode::Tab);
+    }
+    type_text(&mut tui, "soon");
+    key(&mut tui, KeyCode::Up); // away from the bad field
+    key(&mut tui, KeyCode::Enter);
+    let Mode::Editor(editor) = &tui.mode else {
+        panic!("stays open");
+    };
+    assert!(editor.error.as_deref().unwrap().starts_with("estimate:"));
+    assert_eq!(editor.focus, 7, "focus jumps to the bad field");
+
+    ctrl(&mut tui, 'u');
+    type_text(&mut tui, "45m");
+    key(&mut tui, KeyCode::Esc);
+    assert!(matches!(tui.mode, Mode::Editor(_)), "first Esc warns");
+    key(&mut tui, KeyCode::Esc);
+    assert!(matches!(tui.mode, Mode::Normal));
+    assert_eq!(tui.app.task(1).unwrap().estimate_min, None, "discarded");
+
+    // Esc without changes closes at once.
+    press(&mut tui, "e");
+    key(&mut tui, KeyCode::Esc);
+    assert!(matches!(tui.mode, Mode::Normal));
+}

@@ -85,7 +85,7 @@ impl Action {
         (Action::Open, "open", "Open view / full-screen detail"),
         (Action::Add, "quick_add", "Quick-add a task"),
         (Action::AddSubtask, "add_subtask", "Add a subtask"),
-        (Action::Edit, "edit", "Edit title"),
+        (Action::Edit, "edit", "Edit task (all fields)"),
         (Action::EditNotes, "edit_notes", "Edit notes in $EDITOR"),
         (Action::Modify, "modify", "Modify with quick-add tokens"),
         (Action::ToggleDone, "done", "Toggle done"),

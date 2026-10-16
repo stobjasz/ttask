@@ -13,6 +13,7 @@ use ttask_core::quickadd::{Change, Mods, Wait, is_tag_name};
 use ttask_core::{Priority, Task, TaskId};
 use ttask_store::{DbMode, StoreError, TaskSort};
 
+use crate::editor::{Editor, NOTES};
 use crate::input::LineInput;
 use crate::keymap::{Action, Keymap, KeymapName};
 use crate::palette::{Item, Palette, Target};
@@ -77,7 +78,6 @@ pub enum SidebarEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
     Add { parent: Option<TaskId> },
-    Title(TaskId),
     Modify(Vec<TaskId>),
     Due(Vec<TaskId>),
     Move(Vec<TaskId>),
@@ -99,7 +99,6 @@ impl PromptKind {
         match self {
             PromptKind::Add { parent: None } => "Add",
             PromptKind::Add { parent: Some(_) } => "Add subtask",
-            PromptKind::Title(_) => "Title",
             PromptKind::Modify(_) => "Modify",
             PromptKind::Due(_) => "Due",
             PromptKind::Move(_) => "Move to",
@@ -155,6 +154,8 @@ pub enum Mode {
         entries: Vec<(String, String)>,
         scroll: u16,
     },
+    /// The in-app task editor.
+    Editor(Box<Editor>),
     Locked {
         input: LineInput,
         error: Option<String>,
@@ -476,6 +477,7 @@ impl Tui {
             }
             Mode::Prompt(prompt) => self.prompt_key(prompt, key),
             Mode::Palette(palette) => self.palette_key(palette, key),
+            Mode::Editor(editor) => self.editor_key(editor, key),
             Mode::Confirm { message, ids } => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                     let n = ids.len();
@@ -532,6 +534,71 @@ impl Tui {
                 }
             },
         };
+    }
+
+    fn editor_key(&mut self, mut editor: Box<Editor>, key: KeyEvent) -> Mode {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('s') if ctrl => return self.save_editor(editor),
+            KeyCode::Esc => {
+                if editor.is_dirty() && !editor.confirm_discard {
+                    editor.confirm_discard = true;
+                    editor.error =
+                        Some("Unsaved changes: Esc again discards them, Ctrl-S saves".into());
+                    return Mode::Editor(editor);
+                }
+                return Mode::Normal;
+            }
+            KeyCode::Tab => editor.move_focus(1),
+            KeyCode::BackTab => editor.move_focus(-1),
+            _ if editor.focus == NOTES => {
+                if !editor.notes.handle(key) && key.code == KeyCode::Up {
+                    editor.move_focus(-1);
+                }
+            }
+            KeyCode::Up => editor.move_focus(-1),
+            KeyCode::Down => editor.move_focus(1),
+            KeyCode::Enter => return self.save_editor(editor),
+            _ => {
+                let focus = editor.focus;
+                editor.inputs[focus].handle(key);
+            }
+        }
+        editor.confirm_discard = false;
+        if editor
+            .error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("Unsaved"))
+        {
+            editor.error = None;
+        }
+        Mode::Editor(editor)
+    }
+
+    /// Applies the editor's changes as one undoable edit.
+    fn save_editor(&mut self, mut editor: Box<Editor>) -> Mode {
+        let mods = match editor.form().changes(editor.original(), self.app.today()) {
+            Ok(mods) => mods,
+            Err(e) => {
+                editor.error = Some(e);
+                editor.focus_error();
+                return Mode::Editor(editor);
+            }
+        };
+        if mods.is_empty() {
+            return Mode::Normal;
+        }
+        match self.app.edit_with(&[editor.task_id], &mods) {
+            Ok(_) => {
+                self.reload();
+                self.ok("Saved (u to undo)");
+                Mode::Normal
+            }
+            Err(e) => {
+                editor.error = Some(e.to_string());
+                Mode::Editor(editor)
+            }
+        }
     }
 
     /// New scroll position for a key in a scrollable popup; `None` closes it.
@@ -718,11 +785,6 @@ impl Tui {
                     Err(e) => Err(e.to_string()),
                 }
             }
-            PromptKind::Title(id) => self
-                .app
-                .set_title(*id, &text)
-                .map(|_| None)
-                .map_err(|e| e.to_string()),
             PromptKind::Modify(ids) => self
                 .app
                 .edit(ids, &text)
@@ -1001,8 +1063,7 @@ impl Tui {
             }
             Action::Edit => {
                 if let Some(task) = self.selected_task() {
-                    let (id, title) = (task.id, task.title.clone());
-                    self.open_prompt(PromptKind::Title(id), &title);
+                    self.mode = Mode::Editor(Box::new(Editor::new(task)));
                 }
             }
             Action::EditNotes => self.editor_request = self.selected_task().map(|t| t.id),

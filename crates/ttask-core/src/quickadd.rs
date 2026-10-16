@@ -107,6 +107,8 @@ pub struct Mods {
     pub recur: Option<Change<(RecurRule, RecurMode)>>,
     pub reminders: Vec<ReminderSpec>,
     pub clear_reminders: bool,
+    /// Replacement notes; quick-add text never sets them (forms do).
+    pub notes: Option<String>,
 }
 
 impl Mods {

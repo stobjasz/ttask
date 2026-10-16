@@ -841,17 +841,12 @@ fn edit_in_editor(ctx: &Ctx, app: &mut App, id: TaskId) -> anyhow::Result<()> {
         ctx.say("No changes");
         return Ok(());
     }
-    let (mut mods, notes) = form::parse(&edited, app.today())?;
-    mods.remove_tags = task
-        .tags
-        .iter()
-        .filter(|t| !mods.add_tags.iter().any(|a| a.eq_ignore_ascii_case(t)))
-        .cloned()
-        .collect();
-    app.edit_with(&[id], &mods)?;
-    if notes != task.notes {
-        app.set_notes(id, &notes)?;
+    let mods = form::parse(&edited, &task, app.today())?;
+    if mods.is_empty() {
+        ctx.say("No changes");
+        return Ok(());
     }
+    app.edit_with(&[id], &mods)?;
     let task = app.task(id)?;
     ctx.say(format!(
         "Updated {}",
