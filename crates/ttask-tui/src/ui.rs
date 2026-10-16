@@ -14,6 +14,7 @@ use ttask_core::{Status, Task};
 use unicode_width::UnicodeWidthStr;
 
 use crate::editor::{FIELDS, NOTES};
+use crate::focus::FocusSession;
 use crate::keymap::Action;
 use crate::state::{Focus, Mode, PromptKind, SidebarEntry, Tui};
 
@@ -25,6 +26,10 @@ pub fn draw(f: &mut Frame<'_>, tui: &mut Tui) {
     f.render_widget(Block::new().style(tui.theme.base), area);
     if let Mode::Locked { input, error } = &tui.mode {
         draw_lock(f, tui, area, &input.display(), error.as_deref());
+        return;
+    }
+    if let Mode::Focus(session) = &tui.mode {
+        draw_focus(f, tui, area, session);
         return;
     }
     let footer_height = match &tui.mode {
@@ -1280,6 +1285,107 @@ fn draw_confirm(f: &mut Frame<'_>, tui: &Tui, area: Rect, message: &str) {
             .alignment(Alignment::Center),
         rect,
     );
+}
+
+fn draw_focus(f: &mut Frame<'_>, tui: &Tui, area: Rect, session: &FocusSession) {
+    use crate::focus::{Phase, big_text, clock};
+    let t = &tui.theme;
+    let now = std::time::Instant::now();
+    let detail = tui.detail.as_ref().filter(|d| d.task.id == session.task_id);
+    let mut lines: Vec<Line> = Vec::new();
+    let title = detail.map_or("", |d| d.task.title.as_str());
+    lines.push(Line::styled(
+        title.to_owned(),
+        t.base.add_modifier(Modifier::BOLD),
+    ));
+    if let Some(d) = detail {
+        let mut meta = Vec::new();
+        if let Some(p) = &d.task.project {
+            meta.push(format!("#{p}"));
+        }
+        meta.extend(d.task.tags.iter().map(|g| format!("+{g}")));
+        if d.tracked_minutes > 0 {
+            meta.push(format!(
+                "tracked {}",
+                format_minutes(d.tracked_minutes as u32)
+            ));
+        }
+        lines.push(Line::styled(meta.join(" "), t.dim));
+    }
+    lines.push(Line::raw(""));
+    let phase_style = match session.phase {
+        Phase::Work => t.accent.add_modifier(Modifier::BOLD),
+        _ => t.ok.add_modifier(Modifier::BOLD),
+    };
+    let mut phase = session.phase.label().to_uppercase();
+    if session.is_paused() {
+        phase.push_str(" · paused");
+    }
+    lines.push(Line::styled(phase, phase_style));
+    lines.push(Line::raw(""));
+    let ascii = t.glyphs.open == "( )";
+    for row in big_text(&clock(session.remaining(now)), ascii) {
+        lines.push(Line::styled(row, phase_style));
+    }
+    lines.push(Line::raw(""));
+    let every = session.settings.long_break_every.max(1);
+    let in_set = session.completed % every;
+    let dots: String = (0..every)
+        .map(|i| {
+            if i < in_set {
+                t.glyphs.done
+            } else {
+                t.glyphs.open
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    lines.push(Line::from(vec![
+        Span::styled(dots, t.accent),
+        Span::styled(
+            format!(
+                "   {} work phase{} done",
+                session.completed,
+                if session.completed == 1 { "" } else { "s" }
+            ),
+            t.dim,
+        ),
+    ]));
+    if let Some(d) = detail.filter(|d| !d.checklist.is_empty()) {
+        lines.push(Line::raw(""));
+        let done = d.checklist.iter().filter(|c| c.checked).count();
+        lines.push(Line::styled(
+            format!("Checklist {done}/{}", d.checklist.len()),
+            t.accent,
+        ));
+        for (i, item) in d.checklist.iter().enumerate() {
+            let mark = if item.checked {
+                t.glyphs.box_done
+            } else {
+                t.glyphs.box_open
+            };
+            let style = if i == session.item {
+                t.selected
+            } else if item.checked {
+                t.done
+            } else {
+                t.base
+            };
+            lines.push(Line::styled(format!("{mark} {}", item.text), style));
+        }
+    }
+    let height = lines.len() as u16;
+    let rect = centered(area, area.width.saturating_sub(4).min(80), height + 2);
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
+    let help = " Space pause · s skip phase · x done · Enter toggle item · Esc leave";
+    let footer = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+    match &tui.status {
+        Some(status) => f.render_widget(
+            Paragraph::new(Span::styled(format!(" {}", status.text), t.ok)),
+            footer,
+        ),
+        None => f.render_widget(Paragraph::new(Span::styled(help, t.dim)), footer),
+    }
 }
 
 fn draw_lock(f: &mut Frame<'_>, tui: &Tui, area: Rect, masked: &str, error: Option<&str>) {

@@ -3,6 +3,7 @@
 
 mod agenda;
 mod editor;
+mod focus;
 mod input;
 mod keymap;
 mod markdown;
@@ -19,6 +20,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ttask_app::App;
 
+pub use focus::FocusSettings;
 pub use keymap::{Action, KeymapName};
 pub use state::{Focus, LinkOpener, Mode, Notifier, Opener, Settings, Tui, Unlocker};
 pub use theme::{DetailPane, ThemeName};

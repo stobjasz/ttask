@@ -888,7 +888,10 @@ fn agenda_grid_moves_by_day_and_week_and_postpones() {
     assert_eq!(titles(&tui), ["Standup"]);
     tui.status = None;
     let screen = render_to_string(&mut tui, 160, 20);
-    assert!(screen.contains("Agenda · 12 Oct – 18 Oct 2026 (this week)"), "{screen}");
+    assert!(
+        screen.contains("Agenda · 12 Oct – 18 Oct 2026 (this week)"),
+        "{screen}"
+    );
     assert!(screen.contains("Mon 12"), "{screen}");
     assert!(screen.contains("09:00 Standup"), "{screen}");
     assert!(screen.contains("Gardening"), "{screen}");
@@ -925,4 +928,61 @@ fn agenda_grid_moves_by_day_and_week_and_postpones() {
     assert!(screen.contains("(next week)"), "{screen}");
     tui.open_view(ttask_app::View::today());
     assert!(tui.agenda.is_none());
+}
+
+#[test]
+fn focus_mode_runs_pomodoros_with_the_timer() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+    let dir = TempDir::new().unwrap();
+    let notes: Rc<RefCell<Vec<String>>> = Rc::default();
+    let sink = notes.clone();
+    let settings = Settings {
+        notify: Some(Box::new(move |title, _| sink.borrow_mut().push(title.to_owned()))),
+        ..Settings::default()
+    };
+    let store = Store::create(&dir.path().join("t.db"), None).unwrap();
+    let app = App::new(store, FixedClock::on(date(2026, 10, 15)));
+    let mut tui = Tui::new(app, settings).unwrap();
+    add(&mut tui, "Write report due:today");
+    let id = tui.tasks[0].0.id;
+    tui.app.checklist_add(id, "outline").unwrap();
+    tui.reload();
+
+    press(&mut tui, "F");
+    let running = |tui: &Tui| tui.app.running_timer().unwrap().is_some();
+    assert!(running(&tui));
+    let screen = render_to_string(&mut tui, 100, 30);
+    assert!(screen.contains("FOCUS"), "{screen}");
+    assert!(screen.contains("Write report"), "{screen}");
+    assert!(screen.contains("outline"), "{screen}");
+
+    let started = match &tui.mode {
+        Mode::Focus(s) => s.phase_started,
+        _ => panic!("focus mode"),
+    };
+    let min = Duration::from_secs(60);
+    tui.tick(started + 25 * min);
+    let Mode::Focus(session) = &tui.mode else {
+        panic!()
+    };
+    assert_eq!(session.phase, crate::focus::Phase::ShortBreak);
+    assert!(!running(&tui), "breaks stop the time tracker");
+    assert_eq!(*notes.borrow(), ["ttask: Short break"]);
+
+    tui.tick(started + 30 * min);
+    assert!(running(&tui), "back to work");
+    press(&mut tui, " ");
+    assert!(!running(&tui), "paused");
+    press(&mut tui, " ");
+    assert!(running(&tui));
+
+    key(&mut tui, KeyCode::Enter);
+    assert!(tui.app.detail(id).unwrap().checklist[0].checked);
+
+    press(&mut tui, "x");
+    assert!(matches!(tui.mode, Mode::Normal));
+    assert!(!tui.app.task(id).unwrap().is_open());
+    assert!(!running(&tui));
 }

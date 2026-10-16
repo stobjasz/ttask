@@ -17,6 +17,8 @@ pub struct Config {
     pub keys: BTreeMap<String, String>,
     /// Weights for the urgency score (the Next view, `--sort urgency`).
     pub urgency: ttask_core::urgency::UrgencyWeights,
+    /// Pomodoro lengths for the TUI's focus mode.
+    pub focus: ttask_tui::FocusSettings,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

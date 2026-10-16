@@ -15,6 +15,7 @@ use ttask_store::{DbMode, StoreError, TaskSort};
 
 use crate::agenda::Agenda;
 use crate::editor::{Editor, NOTES};
+use crate::focus::{FocusSession, FocusSettings, Phase};
 use crate::input::LineInput;
 use crate::keymap::{Action, Keymap, KeymapName};
 use crate::palette::{Item, Palette, Target};
@@ -44,6 +45,7 @@ pub struct Settings {
     pub notify: Option<Notifier>,
     pub open_db: Option<Opener>,
     pub open_link: Option<LinkOpener>,
+    pub focus: FocusSettings,
 }
 
 impl Default for Settings {
@@ -60,6 +62,7 @@ impl Default for Settings {
             notify: None,
             open_db: None,
             open_link: None,
+            focus: FocusSettings::default(),
         }
     }
 }
@@ -165,6 +168,8 @@ pub enum Mode {
     },
     /// The in-app task editor.
     Editor(Box<Editor>),
+    /// One task full-screen with a Pomodoro timer.
+    Focus(Box<FocusSession>),
     Locked {
         input: LineInput,
         error: Option<String>,
@@ -425,8 +430,16 @@ impl Tui {
         if matches!(self.mode, Mode::Locked { .. }) {
             return;
         }
+        if matches!(self.mode, Mode::Focus(_)) {
+            self.focus_tick(now);
+        }
         if let Some(idle) = self.settings.idle_lock {
-            if self.settings.encrypted && now.duration_since(self.last_activity) >= idle {
+            // Focus mode runs without input for a whole work phase.
+            let focusing = matches!(self.mode, Mode::Focus(_));
+            if self.settings.encrypted
+                && !focusing
+                && now.duration_since(self.last_activity) >= idle
+            {
                 self.lock();
                 return;
             }
@@ -516,6 +529,7 @@ impl Tui {
             Mode::Prompt(prompt) => self.prompt_key(prompt, key),
             Mode::Palette(palette) => self.palette_key(palette, key),
             Mode::Editor(editor) => self.editor_key(editor, key),
+            Mode::Focus(session) => self.focus_key(session, key),
             Mode::Confirm { message, ids } => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                     let n = ids.len();
@@ -576,6 +590,119 @@ impl Tui {
                 }
             },
         };
+    }
+
+    fn focus_key(&mut self, mut session: Box<FocusSession>, key: KeyEvent) -> Mode {
+        let now = Instant::now();
+        let items = self
+            .detail
+            .as_ref()
+            .filter(|d| d.task.id == session.task_id)
+            .map(|d| d.checklist.clone())
+            .unwrap_or_default();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.stop_focus_timer(&session);
+                self.reload();
+                self.ok(format!(
+                    "Focus ended after {} work phase{}",
+                    session.completed,
+                    plural(session.completed as usize)
+                ));
+                return Mode::Normal;
+            }
+            KeyCode::Char(' ') | KeyCode::Char('p') => {
+                session.toggle_pause(now);
+                if session.phase == Phase::Work {
+                    if session.is_paused() {
+                        self.stop_focus_timer(&session);
+                    } else {
+                        let _ = self.app.start_timer(session.task_id);
+                    }
+                }
+            }
+            KeyCode::Char('s') => self.next_focus_phase(&mut session, now, false),
+            KeyCode::Char('x') => {
+                self.stop_focus_timer(&session);
+                let id = session.task_id;
+                self.mutate(|app| {
+                    app.complete(&[id])?;
+                    Ok("Done! (u to undo)".into())
+                });
+                return Mode::Normal;
+            }
+            KeyCode::Enter => {
+                if let Some(item) = items.get(session.item) {
+                    let item_id = item.id;
+                    self.mutate(|app| {
+                        app.checklist_toggle(item_id)?;
+                        Ok(String::new())
+                    });
+                }
+            }
+            _ => match self.keymap.action(&key) {
+                Some(Action::Down) if !items.is_empty() => {
+                    session.item = (session.item + 1).min(items.len() - 1);
+                }
+                Some(Action::Up) => session.item = session.item.saturating_sub(1),
+                _ => {}
+            },
+        }
+        Mode::Focus(session)
+    }
+
+    /// Ends the current phase on time.
+    fn focus_tick(&mut self, now: Instant) {
+        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        let Mode::Focus(mut session) = mode else {
+            self.mode = mode;
+            return;
+        };
+        if !session.is_paused() && session.remaining(now).is_zero() {
+            self.next_focus_phase(&mut session, now, true);
+        }
+        self.mode = Mode::Focus(session);
+    }
+
+    /// Work → break stops the time tracker; break → work restarts it.
+    fn next_focus_phase(&mut self, session: &mut FocusSession, now: Instant, on_time: bool) {
+        if session.phase == Phase::Work {
+            self.stop_focus_timer(session);
+        }
+        session.advance(now);
+        if session.phase == Phase::Work {
+            let _ = self.app.start_timer(session.task_id);
+        }
+        let (title, body) = match session.phase {
+            Phase::Work => ("Back to work", "Break over".to_owned()),
+            phase => (
+                phase.label(),
+                format!(
+                    "{} work phase{} done",
+                    session.completed,
+                    plural(session.completed as usize)
+                ),
+            ),
+        };
+        if on_time {
+            if let Some(notify) = &self.settings.notify {
+                notify(&format!("ttask: {title}"), &body);
+            }
+        }
+        self.reload();
+        self.ok(format!("{title}: {body}"));
+    }
+
+    fn stop_focus_timer(&mut self, session: &FocusSession) {
+        let running_here = self
+            .app
+            .running_timer()
+            .ok()
+            .flatten()
+            .is_some_and(|(_, t)| t.id == session.task_id);
+        if running_here {
+            let _ = self.app.stop_timer();
+        }
     }
 
     fn editor_key(&mut self, mut editor: Box<Editor>, key: KeyEvent) -> Mode {
@@ -1524,6 +1651,24 @@ impl Tui {
             Action::Annotate => {
                 if let Some(id) = self.selected_task().map(|t| t.id) {
                     self.open_prompt(PromptKind::Annotate(id), "");
+                }
+            }
+            Action::Focus => {
+                if let Some(task) = self.selected_task().filter(|t| t.is_open()) {
+                    let id = task.id;
+                    match self.app.start_timer(id) {
+                        Ok(_) => {
+                            self.reload();
+                            self.mode = Mode::Focus(Box::new(FocusSession::new(
+                                id,
+                                self.settings.focus,
+                                Instant::now(),
+                            )));
+                        }
+                        Err(e) => self.error(e.to_string()),
+                    }
+                } else if self.selected_task().is_some() {
+                    self.error("Focus works on open tasks");
                 }
             }
             Action::Help => self.mode = Mode::Help { scroll: 0 },

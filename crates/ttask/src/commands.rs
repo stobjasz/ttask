@@ -357,6 +357,7 @@ fn tui(ctx: &Ctx) -> anyhow::Result<()> {
         notify: Some(Box::new(remind::notify)),
         open_db: Some(open_db),
         open_link: Some(Box::new(ttask_app::launch::open_link)),
+        focus: ctx.config.focus,
     };
     ttask_tui::run(app, settings)
 }
