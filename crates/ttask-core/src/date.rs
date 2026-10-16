@@ -50,6 +50,7 @@ fn parse_date_only(s: &str, today: Date) -> Option<Date> {
         "today" | "tod" | "now" => return Some(today),
         "tomorrow" | "tom" | "tmr" => return today.tomorrow().ok(),
         "yesterday" | "yest" => return today.yesterday().ok(),
+        "sow" => return Some(start_of_week(today)),
         "eow" => return Some(end_of_week(today)),
         "eom" => return Some(today.last_of_month()),
         "eoy" => return Date::new(today.year(), 12, 31).ok(),
@@ -173,6 +174,12 @@ pub fn next_weekday_on_or_after(today: Date, weekday: Weekday) -> Date {
         (weekday.to_monday_zero_offset() - today.weekday().to_monday_zero_offset()).rem_euclid(7);
     today
         .checked_add(i64::from(ahead).days())
+        .expect("date in range")
+}
+
+/// Monday of the week containing `date`.
+pub fn start_of_week(date: Date) -> Date {
+    date.checked_sub(i64::from(date.weekday().to_monday_zero_offset()).days())
         .expect("date in range")
 }
 

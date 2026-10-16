@@ -221,6 +221,10 @@ fn draw_sidebar(f: &mut Frame<'_>, tui: &Tui, area: Rect) {
 }
 
 fn draw_list(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
+    if tui.agenda.is_some() {
+        draw_agenda(f, tui, area);
+        return;
+    }
     let focused = tui.focus == Focus::List;
     let title = tui.current.name.clone();
     let block = pane_block(tui, &title, focused);
@@ -294,6 +298,104 @@ fn draw_list(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_agenda(f: &mut Frame<'_>, tui: &mut Tui, area: Rect) {
+    let Some(agenda) = &tui.agenda else {
+        return;
+    };
+    let today = tui.app.today();
+    let focused = tui.focus == Focus::List;
+    let (first, last) = (agenda.date(0), agenda.date(6));
+    let weeks = ttask_core::date::days_between(ttask_core::date::start_of_week(today), first) / 7;
+    let when = match weeks {
+        0 => " (this week)".to_owned(),
+        1 => " (next week)".to_owned(),
+        -1 => " (last week)".to_owned(),
+        n if n > 0 => format!(" (in {n} weeks)"),
+        n => format!(" ({} weeks ago)", -n),
+    };
+    let title = format!(
+        "Agenda · {} – {}{when}",
+        first.strftime("%-d %b"),
+        last.strftime("%-d %b %Y")
+    );
+    let block = pane_block(tui, &title, focused);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let t = &tui.theme;
+    let g = t.glyphs;
+    let columns = Layout::horizontal([Constraint::Ratio(1, 7); 7]).split(inner);
+    let body_height = inner.height.saturating_sub(1) as usize;
+    for (day, rect) in columns.iter().enumerate() {
+        let date = agenda.date(day);
+        let selected_day = day == agenda.day;
+        let col = if day == 0 {
+            *rect
+        } else {
+            // A thin separator on the left of every column but the first.
+            let sep = Block::new().borders(Borders::LEFT).border_style(t.border);
+            f.render_widget(sep, *rect);
+            Rect {
+                x: rect.x + 1,
+                width: rect.width.saturating_sub(1),
+                ..*rect
+            }
+        };
+        let width = col.width as usize;
+        let mut header_style = if date == today {
+            t.today.add_modifier(Modifier::BOLD)
+        } else {
+            t.base.add_modifier(Modifier::BOLD)
+        };
+        if selected_day {
+            header_style = header_style.add_modifier(Modifier::UNDERLINED);
+        }
+        let header = format!("{} {}", date.strftime("%a"), date.day());
+        let tasks = &agenda.columns[day];
+        let offset = if selected_day {
+            (tui.task_idx + 1).saturating_sub(body_height)
+        } else {
+            0
+        };
+        let mut lines = vec![Line::styled(truncate(&header, width), header_style)];
+        let overflow = tasks.len().saturating_sub(offset) > body_height;
+        let shown = if overflow {
+            body_height.saturating_sub(1)
+        } else {
+            body_height
+        };
+        for (i, task) in tasks.iter().enumerate().skip(offset).take(shown) {
+            let glyph = if task.is_open() { g.open } else { g.done };
+            let mut text = format!("{glyph} ");
+            if let Some(time) = task.due_time.filter(|_| task.due_date == Some(date)) {
+                text.push_str(&format_time(time));
+                text.push(' ');
+            }
+            text.push_str(&task.title);
+            let style = if !task.is_open() {
+                t.done
+            } else if task.is_overdue(today) {
+                t.overdue
+            } else {
+                t.base
+            };
+            let style = if selected_day && i == tui.task_idx && focused {
+                t.selected
+            } else if selected_day && i == tui.task_idx {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style
+            };
+            lines.push(Line::styled(pad(&truncate(&text, width), width), style));
+        }
+        if overflow {
+            let more = tasks.len() - offset - shown;
+            lines.push(Line::styled(format!("+{more} more"), t.dim));
+        }
+        f.render_widget(Paragraph::new(lines), col);
+    }
+    tui.page = body_height.max(1);
 }
 
 fn draw_review_projects(f: &mut Frame<'_>, tui: &Tui, inner: Rect, focused: bool) {

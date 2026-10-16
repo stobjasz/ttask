@@ -13,6 +13,7 @@ use ttask_core::quickadd::{Change, Mods, Wait, is_tag_name};
 use ttask_core::{Priority, Task, TaskId};
 use ttask_store::{DbMode, StoreError, TaskSort};
 
+use crate::agenda::Agenda;
 use crate::editor::{Editor, NOTES};
 use crate::input::LineInput;
 use crate::keymap::{Action, Keymap, KeymapName};
@@ -204,6 +205,8 @@ pub struct Tui {
     pub context: Option<String>,
     /// The weekly review in progress.
     pub review: Option<Review>,
+    /// The week grid, while the Agenda view is open.
+    pub agenda: Option<Agenda>,
     /// `Ctrl-S` replaces the view's sort until another view opens.
     pub sort_override: Option<TaskSort>,
     editor_request: Option<TaskId>,
@@ -249,6 +252,7 @@ impl Tui {
             context: None,
             sort_override: None,
             review: None,
+            agenda: None,
             editor_request: None,
             clipboard_request: None,
             data_version: 0,
@@ -286,8 +290,17 @@ impl Tui {
             sort: self.sort(),
             ..self.current.clone()
         };
-        let tasks = self.app.view_tasks(&view, &self.filter)?;
-        self.tasks = arrange_tree(tasks);
+        if let Some(agenda) = self.agenda.as_mut() {
+            let tasks = self.app.list(&agenda.query(), &self.filter, view.sort)?;
+            agenda.fill(tasks);
+            self.tasks = agenda.columns[agenda.day]
+                .iter()
+                .map(|t| (t.clone(), 0))
+                .collect();
+        } else {
+            let tasks = self.app.view_tasks(&view, &self.filter)?;
+            self.tasks = arrange_tree(tasks);
+        }
         self.task_idx = selected_id
             .and_then(|id| self.tasks.iter().position(|(t, _)| t.id == id))
             .unwrap_or(self.task_idx)
@@ -349,6 +362,10 @@ impl Tui {
     }
 
     pub fn detail_visible(&self) -> bool {
+        if self.agenda.is_some() {
+            // The grid takes the room; Enter shows the detail full-screen.
+            return false;
+        }
         match self.settings.detail_pane {
             DetailPane::Always => true,
             DetailPane::Never => false,
@@ -777,6 +794,7 @@ impl Tui {
     }
 
     pub fn open_view(&mut self, view: View) {
+        self.agenda = (view.kind == ViewKind::Agenda).then(|| Agenda::new(self.app.today()));
         self.current = view;
         self.sort_override = None;
         self.filter.clear();
@@ -1031,6 +1049,27 @@ impl Tui {
             Action::PageDown => self.move_cursor(self.page.max(1) as isize),
             Action::Top => self.move_cursor(isize::MIN / 2),
             Action::Bottom => self.move_cursor(isize::MAX / 2),
+            Action::FocusLeft | Action::FocusRight
+                if self.focus == Focus::List
+                    && !self.detail_full
+                    && self.agenda.as_ref().is_some_and(|a| {
+                        if action == Action::FocusLeft {
+                            a.day > 0
+                        } else {
+                            a.day < 6
+                        }
+                    }) =>
+            {
+                if let Some(agenda) = self.agenda.as_mut() {
+                    agenda.day = if action == Action::FocusLeft {
+                        agenda.day - 1
+                    } else {
+                        agenda.day + 1
+                    };
+                }
+                self.task_idx = 0;
+                self.reload();
+            }
             Action::FocusNext | Action::FocusRight => {
                 self.focus = match self.focus {
                     Focus::Sidebar => Focus::List,
@@ -1089,6 +1128,12 @@ impl Tui {
                     .filter(|r| r.current() == Step::Projects)
                     .and_then(|r| r.selected_project())
                     .map(|p| format!("#{} ", p.path))
+                    .or_else(|| {
+                        // In the agenda, new tasks are due on the selected day.
+                        self.agenda
+                            .as_ref()
+                            .map(|a| format!("due:{} ", a.selected_date()))
+                    })
                     .unwrap_or_default();
                 self.open_prompt(PromptKind::Add { parent: None }, &initial);
             }
@@ -1103,11 +1148,50 @@ impl Tui {
                         self.end_review();
                     }
                 }
+                None if self.agenda.is_some() => {
+                    let weeks = if action == Action::ReviewNext { 1 } else { -1 };
+                    if let Some(agenda) = self.agenda.as_mut() {
+                        agenda.shift_week(weeks);
+                    }
+                    self.task_idx = 0;
+                    self.reload();
+                }
                 None => self.error(format!(
                     "Start the weekly review with {}",
                     self.keymap.first_key(Action::Review)
                 )),
             },
+            Action::Later | Action::Earlier => {
+                let ids = self.targets();
+                if !ids.is_empty() {
+                    let days = if action == Action::Later { 1 } else { -1 };
+                    let follow = ids.len() == 1 && self.agenda.is_some();
+                    self.mutate(|app| {
+                        let tasks = app.shift_due(&ids, days)?;
+                        Ok(match tasks.as_slice() {
+                            [t] => format!(
+                                "Due {}",
+                                t.due_date.map(|d| d.to_string()).unwrap_or("none".into())
+                            ),
+                            many => format!("Moved {} tasks", many.len()),
+                        })
+                    });
+                    // Keep the moved task selected in the grid.
+                    if follow {
+                        if let Some(agenda) = self.agenda.as_mut() {
+                            let day = agenda.day as i64 + days;
+                            if (0..7).contains(&day) {
+                                agenda.day = day as usize;
+                            }
+                        }
+                        self.reload();
+                        if let Some(i) = self.tasks.iter().position(|(t, _)| t.id == ids[0]) {
+                            self.task_idx = i;
+                            self.load_detail();
+                        }
+                    }
+                }
+            }
             Action::AddSubtask => {
                 if let Some(task) = self.selected_task() {
                     let parent = task.parent_id.unwrap_or(task.id);

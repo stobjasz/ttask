@@ -611,6 +611,29 @@ impl App {
         })
     }
 
+    /// Moves due dates by `days` (one undo step), keeping the time. A task
+    /// without a due date gets today + `days` when that is not in the past.
+    pub fn shift_due(&mut self, ids: &[TaskId], days: i64) -> Result<Vec<Task>> {
+        let (today, now) = (self.today(), self.now_ms());
+        self.batch(|tx| {
+            let mut out = Vec::new();
+            for &id in ids {
+                tx.track(id, EventKind::Updated, |db| {
+                    let mut fields = TaskFields::from(&db.task(id)?);
+                    fields.due_date = match fields.due_date {
+                        Some(due) => Some(due + days.days()),
+                        None if days > 0 => Some(today + days.days()),
+                        None => None,
+                    };
+                    db.save_task(id, &fields, now)?;
+                    Ok(())
+                })?;
+                out.push(tx.db.task(id)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Moves a recurring task to its next occurrence without completing it.
     pub fn skip(&mut self, id: TaskId) -> Result<Task> {
         let (today, now) = (self.today(), self.now_ms());

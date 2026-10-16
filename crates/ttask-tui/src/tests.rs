@@ -854,7 +854,10 @@ fn weekly_review_walks_through_the_steps() {
     key(&mut tui, KeyCode::Esc);
     assert!(tui.review.as_ref().unwrap().projects.is_empty());
     assert_eq!(
-        tui.app.list("#garden", "", ttask_store::TaskSort::Smart).unwrap()[0].title,
+        tui.app
+            .list("#garden", "", ttask_store::TaskSort::Smart)
+            .unwrap()[0]
+            .title,
         "Buy seeds"
     );
 
@@ -868,4 +871,58 @@ fn weekly_review_walks_through_the_steps() {
 
     press(&mut tui, "]");
     assert!(tui.status.as_ref().unwrap().error, "no review running");
+}
+
+#[test]
+fn agenda_grid_moves_by_day_and_week_and_postpones() {
+    let dir = TempDir::new().unwrap();
+    let mut tui = tui(&dir);
+    add(&mut tui, "Monday thing due:2026-10-12");
+    add(&mut tui, "Standup due:today@09:00");
+    add(&mut tui, "Gardening sched:2026-10-17");
+    add(&mut tui, "Next week due:2026-10-20");
+    add(&mut tui, "Undated");
+    tui.open_view(ttask_app::View::agenda());
+    let agenda = tui.agenda.as_ref().unwrap();
+    assert_eq!(agenda.day, 3, "starts on today, a Thursday");
+    assert_eq!(titles(&tui), ["Standup"]);
+    tui.status = None;
+    let screen = render_to_string(&mut tui, 160, 20);
+    assert!(screen.contains("Agenda · 12 Oct – 18 Oct 2026 (this week)"), "{screen}");
+    assert!(screen.contains("Mon 12"), "{screen}");
+    assert!(screen.contains("09:00 Standup"), "{screen}");
+    assert!(screen.contains("Gardening"), "{screen}");
+    assert!(!screen.contains("Undated"), "{screen}");
+
+    press(&mut tui, "hhh");
+    assert_eq!(titles(&tui), ["Monday thing"]);
+    press(&mut tui, "h");
+    assert_eq!(tui.focus, Focus::Sidebar, "left of Monday is the sidebar");
+    press(&mut tui, "l");
+    press(&mut tui, "lll");
+    assert_eq!(titles(&tui), ["Standup"]);
+
+    // `>` moves the task to Friday and the selection follows it.
+    press(&mut tui, ">");
+    assert_eq!(tui.agenda.as_ref().unwrap().day, 4);
+    assert_eq!(titles(&tui), ["Standup"]);
+    let task = tui.selected_task().unwrap();
+    assert_eq!(task.due_date, Some(date(2026, 10, 16)));
+    assert!(task.due_time.is_some(), "time kept");
+
+    // `a` adds on the selected day.
+    press(&mut tui, "a");
+    match &tui.mode {
+        Mode::Prompt(p) => assert_eq!(p.input.text(), "due:2026-10-16 "),
+        _ => panic!("add prompt"),
+    }
+    key(&mut tui, KeyCode::Esc);
+
+    press(&mut tui, "]");
+    press(&mut tui, "hhh");
+    assert_eq!(titles(&tui), ["Next week"]);
+    let screen = render_to_string(&mut tui, 160, 20);
+    assert!(screen.contains("(next week)"), "{screen}");
+    tui.open_view(ttask_app::View::today());
+    assert!(tui.agenda.is_none());
 }

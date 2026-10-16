@@ -4,6 +4,7 @@
 use jiff::ToSpan;
 use jiff::civil::Date;
 use serde::Serialize;
+use ttask_core::date::start_of_week;
 use ttask_core::{jiff, start_of_day_ms};
 
 use crate::{App, Result};
@@ -45,13 +46,9 @@ impl App {
         let weeks = weeks.max(1);
         let today = self.today();
         let tz = self.clock().time_zone();
-        let monday = |d: Date| {
-            d.checked_sub(i64::from(d.weekday().to_monday_zero_offset()).days())
-                .expect("date in range")
-        };
         let starts: Vec<Date> = (0..weeks)
             .rev()
-            .map(|w| monday(today) - (i64::from(w) * 7).days())
+            .map(|w| start_of_week(today) - (i64::from(w) * 7).days())
             .collect();
         let first = starts[0];
         let start_ms = |d: Date| start_of_day_ms(d, &tz);

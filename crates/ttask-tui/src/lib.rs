@@ -1,6 +1,7 @@
 //! The full-screen TUI: sidebar (views, projects, tags, saved filters), task
 //! list and detail pane over the same services the CLI uses.
 
+mod agenda;
 mod editor;
 mod input;
 mod keymap;

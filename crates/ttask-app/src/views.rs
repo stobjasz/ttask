@@ -19,6 +19,8 @@ pub enum ViewKind {
     Tag(String),
     Saved(i64),
     Search,
+    /// The week grid; the TUI draws it, `ttask ls agenda` lists the week.
+    Agenda,
 }
 
 impl View {
@@ -58,6 +60,16 @@ impl View {
         View::builtin("Someday", "is:someday", TaskSort::Manual)
     }
 
+    /// Due (or, without a due date, scheduled) this week.
+    pub fn agenda() -> View {
+        View {
+            name: "Agenda".into(),
+            query: "(due:>=sow and due:<=eow) or (due:none and sched:>=sow and sched:<=eow)".into(),
+            sort: TaskSort::Smart,
+            kind: ViewKind::Agenda,
+        }
+    }
+
     pub fn upcoming() -> View {
         View::builtin("Upcoming", "due:>today or sched:>today", TaskSort::Smart)
     }
@@ -84,6 +96,7 @@ impl View {
             View::inbox(),
             View::today(),
             View::next(),
+            View::agenda(),
             View::upcoming(),
             View::overdue(),
             View::waiting(),

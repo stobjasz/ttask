@@ -69,6 +69,8 @@ pub enum Action {
     Review,
     ReviewNext,
     ReviewPrev,
+    Later,
+    Earlier,
     Help,
     Quit,
     Back,
@@ -139,8 +141,14 @@ impl Action {
         (Action::Annotate, "annotate", "Add a timestamped note"),
         (Action::Reports, "reports", "Reports"),
         (Action::Review, "review", "Weekly review"),
-        (Action::ReviewNext, "review_next", "Review: next step"),
-        (Action::ReviewPrev, "review_prev", "Review: previous step"),
+        (Action::ReviewNext, "next", "Next review step / agenda week"),
+        (
+            Action::ReviewPrev,
+            "previous",
+            "Previous review step / agenda week",
+        ),
+        (Action::Later, "later", "Due a day later"),
+        (Action::Earlier, "earlier", "Due a day earlier"),
         (Action::Help, "help", "Help"),
         (Action::Quit, "quit", "Quit"),
         (Action::Back, "back", "Back / clear filter"),
@@ -337,6 +345,8 @@ impl Keymap {
         bind(&["W"], Action::Review);
         bind(&["]"], Action::ReviewNext);
         bind(&["["], Action::ReviewPrev);
+        bind(&[">"], Action::Later);
+        bind(&["<"], Action::Earlier);
         bind(&["?", "f1"], Action::Help);
         bind(&["q"], Action::Quit);
         bind(&["esc"], Action::Back);
