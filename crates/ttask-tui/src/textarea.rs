@@ -1,6 +1,6 @@
 //! A small multi-line text area for notes in the task editor.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl TextArea {
     /// Applies an editing key; returns `false` for keys it leaves to the
     /// caller (Tab, Esc, Up on the first line, Ctrl+letters it doesn't use).
     pub fn handle(&mut self, key: KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = crate::input::is_ctrl(&key);
         let len = self.lines[self.row].len();
         match key.code {
             KeyCode::Char('k') if ctrl => self.lines[self.row].truncate(self.col),
@@ -145,6 +145,7 @@ impl TextArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -174,6 +175,15 @@ mod tests {
         area.handle(key(KeyCode::End));
         area.handle(key(KeyCode::Delete));
         assert_eq!(area.text(), "onetwo");
+    }
+
+    #[test]
+    fn altgr_letters_are_typed() {
+        let mut area = TextArea::new("");
+        let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        assert!(area.handle(KeyEvent::new(KeyCode::Char('ą'), altgr)));
+        assert!(!area.handle(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)));
+        assert_eq!(area.text(), "ą");
     }
 
     #[test]

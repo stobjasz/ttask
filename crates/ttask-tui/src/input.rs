@@ -3,6 +3,12 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthStr;
 
+/// Whether `key` is a Ctrl shortcut rather than typed text. Windows reports
+/// AltGr as Ctrl+Alt, so AltGr letters (Polish ą ł ż, German € @) carry both.
+pub fn is_ctrl(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineInput {
     chars: Vec<char>,
@@ -63,7 +69,7 @@ impl LineInput {
     /// Applies an editing key. Returns `false` for keys it does not handle
     /// (Enter, Esc, Tab, arrows up/down).
     pub fn handle(&mut self, key: KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = is_ctrl(&key);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Char('a') if ctrl => self.cursor = 0,
@@ -166,6 +172,16 @@ mod tests {
         input.handle(ctrl('k'));
         assert_eq!(input.text(), "");
         assert!(!input.handle(key(KeyCode::Enter)));
+    }
+
+    #[test]
+    fn altgr_letters_are_typed() {
+        let altgr = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let mut input = LineInput::new("");
+        for c in "żółć".chars() {
+            assert!(input.handle(altgr(c)));
+        }
+        assert_eq!(input.text(), "żółć");
     }
 
     #[test]
