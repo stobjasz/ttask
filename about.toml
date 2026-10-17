@@ -1,0 +1,13 @@
+# cargo-about config: `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.txt`
+# lists the licenses of every crate compiled into the Windows release exe.
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+]

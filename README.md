@@ -6,6 +6,27 @@ leaves your machine unless you export it.
 
 User guide: [docs/USER_GUIDE.md](docs/USER_GUIDE.md) · Design: [DESIGN.md](DESIGN.md).
 
+## Install
+
+Windows x64, a single portable `ttask.exe`
+([releases](https://github.com/stobjasz/ttask/releases)). Pick one:
+
+```powershell
+# Scoop
+scoop bucket add ttask https://github.com/stobjasz/ttask
+scoop install ttask            # update: scoop update ttask
+
+# Install script: %LOCALAPPDATA%\Programs\ttask, added to your user PATH
+irm https://raw.githubusercontent.com/stobjasz/ttask/main/scripts/install.ps1 | iex
+# update: run it again; remove: see the comment at the top of the script
+```
+
+Or download the exe from the releases page, rename it to `ttask.exe` and put
+it in a folder on your PATH. Each release has a `.sha256` checksum and a
+build attestation (`gh attestation verify ttask-*.exe --repo stobjasz/ttask`).
+Your data lives in `%APPDATA%\ttask` and survives upgrades. On macOS and
+Linux, build from source (see [Building](#building)).
+
 ## Quick start
 
 ```sh
@@ -172,3 +193,12 @@ runtime linked statically, so it only depends on Windows system DLLs, plus a
 | `crates/ttask-app` | Services (one undoable transaction per action), views, import/export, backups |
 | `crates/ttask-tui` | ratatui TUI: state machine, rendering, keymaps, palette |
 | `crates/ttask` | The `ttask` binary: CLI, config, password sources, keychain, reminders |
+
+Releases: [docs/RELEASING.md](docs/RELEASING.md).
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. Release binaries include
+SQLCipher, OpenSSL and Rust crates under their own licenses, listed in
+`THIRD-PARTY-LICENSES.txt` on each release.
