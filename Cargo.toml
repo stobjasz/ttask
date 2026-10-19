@@ -41,6 +41,14 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
 
+# Full debug info for every dependency is most of target/'s size. Line tables
+# keep file:line in backtraces for our crates; deps get none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = true
 codegen-units = 1
